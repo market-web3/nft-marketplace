@@ -1,0 +1,509 @@
+;; ============================================
+;; AUCTION CONTRACT
+;; Manages individual NFT auctions
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+
+;; ============================================
+;; STORAGE LAYOUT
+;; ============================================
+;; storage#_
+;;   marketplace_address:MsgAddress
+;;   nft_address:MsgAddress
+;;   seller_address:MsgAddress
+;;   start_price:Coins
+;;   reserve_price:Coins
+;;   min_bid_increment:Coins
+;;   start_time:uint64
+;;   end_time:uint64
+;;   highest_bid:Coins
+;;   highest_bidder:MsgAddress
+;;   bid_count:uint32
+;;   status:uint8
+;;   bids:(HashmapE 256 Bid)
+;;   = Storage;
+
+;; Status: 0=Pending, 1=Active, 2=Ended, 3=Cancelled
+
+;; ============================================
+;; LOAD/SAVE STORAGE
+;; ============================================
+(
+    slice, slice, slice,
+    int, int, int,
+    int, int,
+    int, slice, int, int,
+    cell
+) load_storage() inline {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),            ;; marketplace
+        ds~load_msg_addr(),            ;; nft
+        ds~load_msg_addr(),            ;; seller
+        ds~load_coins(),               ;; start_price
+        ds~load_coins(),               ;; reserve_price
+        ds~load_coins(),               ;; min_bid_increment
+        ds~load_uint(64),              ;; start_time
+        ds~load_uint(64),              ;; end_time
+        ds~load_coins(),               ;; highest_bid
+        ds~load_msg_addr(),            ;; highest_bidder
+        ds~load_uint(32),              ;; bid_count
+        ds~load_uint(8),               ;; status
+        ds~load_dict()                 ;; bids
+    );
+}
+
+() save_storage(
+    slice marketplace,
+    slice nft,
+    slice seller,
+    int start_price,
+    int reserve_price,
+    int min_bid_increment,
+    int start_time,
+    int end_time,
+    int highest_bid,
+    slice highest_bidder,
+    int bid_count,
+    int status,
+    cell bids
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(marketplace)
+        .store_slice(nft)
+        .store_slice(seller)
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_coins(min_bid_increment)
+        .store_uint(start_time, 64)
+        .store_uint(end_time, 64)
+        .store_coins(highest_bid)
+        .store_slice(highest_bidder)
+        .store_uint(bid_count, 32)
+        .store_uint(status, 8)
+        .store_dict(bids)
+        .end_cell());
+}
+
+;; ============================================
+;; BID MANAGEMENT
+;; ============================================
+
+;; Record bid
+cell record_bid(
+    cell bids,
+    int bid_id,
+    slice bidder,
+    int amount,
+    int timestamp
+) inline {
+    cell bid_data = begin_cell()
+        .store_slice(bidder)
+        .store_coins(amount)
+        .store_uint(timestamp, 64)
+        .store_uint(0, 1)             ;; refunded = false
+        .end_cell();
+    
+    bids~udict_set(256, bid_id, bid_data);
+    return bids;
+}
+
+;; Refund bid
+() refund_bid(
+    int bid_id,
+    slice bidder,
+    int amount
+) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(bidder)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_EXCESSES, 32)
+        .store_uint(bid_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 2);
+}
+
+;; Refund all losing bids
+() refund_losing_bids(cell bids, int winning_bid_id) impure inline {
+    int i = 0;
+    while (i < winning_bid_id) {
+        (slice bid_data, int found) = bids.udict_get?(256, i);
+        if (found) {
+            slice cs = bid_data.begin_parse();
+            slice bidder = cs~load_msg_addr();
+            int amount = cs~load_coins();
+            int refunded = cs~load_uint(1);
+            
+            if (~ refunded) {
+                refund_bid(i, bidder, amount);
+                
+                ;; Mark as refunded
+                cell updated = begin_cell()
+                    .store_slice(bidder)
+                    .store_coins(amount)
+                    .store_uint(cs~load_uint(64), 64)
+                    .store_uint(1, 1)
+                    .end_cell();
+                bids~udict_set(256, i, updated);
+            }
+        }
+        i = i + 1;
+    }
+}
+
+;; ============================================
+;; AUCTION OPERATIONS
+;; ============================================
+
+;; Place a bid
+() op_place_bid(
+    slice sender,
+    int query_id,
+    int msg_value,
+    slice marketplace,
+    slice nft,
+    slice seller,
+    int start_price,
+    int reserve_price,
+    int min_bid_increment,
+    int start_time,
+    int end_time,
+    int highest_bid,
+    slice highest_bidder,
+    int bid_count,
+    int status,
+    cell bids
+) impure inline {
+    ;; Check auction is active
+    throw_unless(ERR_AUCTION_NOT_FOUND, status == 1);
+    throw_unless(ERR_EXPIRED, now() < end_time);
+    throw_unless(ERR_INVALID_TIME, now() >= start_time);
+    
+    ;; Calculate minimum bid
+    int min_bid = highest_bid > 0 ? highest_bid + min_bid_increment : start_price;
+    throw_unless(ERR_BID_TOO_LOW, msg_value >= min_bid);
+    
+    ;; Refund previous highest bidder if exists
+    if (highest_bid > 0 & highest_bidder.slice_bits() == 267) {
+        refund_bid(bid_count - 1, highest_bidder, highest_bid);
+    }
+    
+    ;; Record new bid
+    bids = record_bid(bids, bid_count, sender, msg_value, now());
+    
+    ;; Update auction state
+    save_storage(
+        marketplace, nft, seller,
+        start_price, reserve_price, min_bid_increment,
+        start_time, end_time,
+        msg_value, sender,
+        bid_count + 1, status,
+        bids
+    );
+    
+    ;; Notify marketplace
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(marketplace)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_AUCTION_BID, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft)
+        .store_slice(sender)
+        .store_coins(msg_value)
+        .store_coins(highest_bid)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; End auction (can be called by anyone after end_time)
+() op_end_auction(
+    slice sender,
+    int query_id,
+    slice marketplace,
+    slice nft,
+    slice seller,
+    int start_price,
+    int reserve_price,
+    int min_bid_increment,
+    int start_time,
+    int end_time,
+    int highest_bid,
+    slice highest_bidder,
+    int bid_count,
+    int status,
+    cell bids
+) impure inline {
+    ;; Check auction is active and time has expired
+    throw_unless(ERR_AUCTION_NOT_FOUND, status == 1);
+    throw_unless(ERR_AUCTION_NOT_ENDED, now() >= end_time);
+    
+    int new_status = 2;  ;; Ended
+    
+    ;; Check if reserve price was met
+    int reserve_met = highest_bid >= reserve_price;
+    
+    if (reserve_met & highest_bidder.slice_bits() == 267) {
+        ;; Successful auction - transfer NFT and payment
+        
+        ;; Send payment to seller
+        var seller_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(seller)
+            .store_coins(highest_bid)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(OP_SALE_PROCEEDS, 32)
+            .store_uint(query_id, 64)
+            .store_msg_addr(nft)
+            .end_cell();
+        
+        send_raw_message(seller_msg, 1);
+        
+        ;; Transfer NFT to winner
+        cell transfer_body = begin_cell()
+            .store_uint(OP_TRANSFER, 32)
+            .store_uint(query_id, 64)
+            .store_slice(highest_bidder)
+            .store_slice(seller)
+            .store_uint(0, 1)
+            .store_coins(10000000)
+            .store_uint(0, 1)
+            .end_cell();
+        
+        var nft_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(nft)
+            .store_coins(GAS_TRANSFER)
+            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_ref(transfer_body)
+            .end_cell();
+        
+        send_raw_message(nft_msg, 1);
+        
+    } else {
+        ;; Reserve not met - refund all bids
+        refund_losing_bids(bids, bid_count);
+        new_status = 3;  ;; Cancelled (reserve not met)
+    }
+    
+    ;; Save final state
+    save_storage(
+        marketplace, nft, seller,
+        start_price, reserve_price, min_bid_increment,
+        start_time, end_time,
+        highest_bid, highest_bidder,
+        bid_count, new_status,
+        bids
+    );
+    
+    ;; Notify marketplace
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(marketplace)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_AUCTION_ENDED, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft)
+        .store_slice(seller)
+        .store_slice(highest_bidder)
+        .store_coins(highest_bid)
+        .store_uint(reserve_met, 1)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Cancel auction (only by seller before any bids)
+() op_cancel_auction(
+    slice sender,
+    int query_id,
+    slice marketplace,
+    slice nft,
+    slice seller,
+    int start_price,
+    int reserve_price,
+    int min_bid_increment,
+    int start_time,
+    int end_time,
+    int highest_bid,
+    slice highest_bidder,
+    int bid_count,
+    int status,
+    cell bids
+) impure inline {
+    ;; Only seller can cancel
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, seller));
+    
+    ;; Can only cancel before first bid
+    throw_unless(ERR_INVALID_OP, bid_count == 0);
+    throw_unless(ERR_AUCTION_ENDED, status == 0 | status == 1);
+    
+    ;; Cancel
+    save_storage(
+        marketplace, nft, seller,
+        start_price, reserve_price, min_bid_increment,
+        start_time, end_time,
+        highest_bid, highest_bidder,
+        bid_count, 3,  ;; Cancelled
+        bids
+    );
+    
+    ;; Notify marketplace
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(marketplace)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Extend auction time (by seller)
+() op_extend_auction(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice marketplace,
+    slice nft,
+    slice seller,
+    int start_price,
+    int reserve_price,
+    int min_bid_increment,
+    int start_time,
+    int end_time,
+    int highest_bid,
+    slice highest_bidder,
+    int bid_count,
+    int status,
+    cell bids
+) impure inline {
+    ;; Only seller can extend
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, seller));
+    throw_unless(ERR_AUCTION_NOT_FOUND, status == 1);
+    
+    int extension = in_msg_body~load_uint(64);
+    int new_end_time = end_time + extension;
+    
+    ;; Max 7 day extension
+    throw_unless(ERR_INVALID_TIME, new_end_time <= start_time + 604800);
+    
+    save_storage(
+        marketplace, nft, seller,
+        start_price, reserve_price, min_bid_increment,
+        start_time, new_end_time,
+        highest_bid, highest_bidder,
+        bid_count, status,
+        bids
+    );
+    
+    return ();
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    var (marketplace, nft, seller, start_price, reserve_price, min_bid_increment,
+         start_time, end_time, highest_bid, highest_bidder, bid_count, status, bids) = load_storage();
+    
+    if (op == OP_PLACE_BID) {
+        op_place_bid(sender, query_id, msg_value,
+            marketplace, nft, seller, start_price, reserve_price, min_bid_increment,
+            start_time, end_time, highest_bid, highest_bidder, bid_count, status, bids);
+        return ();
+    }
+    
+    if (op == OP_AUCTION_ENDED) {
+        op_end_auction(sender, query_id,
+            marketplace, nft, seller, start_price, reserve_price, min_bid_increment,
+            start_time, end_time, highest_bid, highest_bidder, bid_count, status, bids);
+        return ();
+    }
+    
+    if (op == OP_CANCEL_SALE) {
+        op_cancel_auction(sender, query_id,
+            marketplace, nft, seller, start_price, reserve_price, min_bid_increment,
+            start_time, end_time, highest_bid, highest_bidder, bid_count, status, bids);
+        return ();
+    }
+    
+    if (op == 0x9003) {  ;; Extend
+        op_extend_auction(sender, query_id, in_msg_body,
+            marketplace, nft, seller, start_price, reserve_price, min_bid_increment,
+            start_time, end_time, highest_bid, highest_bidder, bid_count, status, bids);
+        return ();
+    }
+    
+    throw(ERR_INVALID_OP);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+(int, int, int, int, int, int, int, slice, int, int) get_auction_info() method_id {
+    var (_, _, _, start_price, reserve_price, min_bid_increment,
+         start_time, end_time, highest_bid, highest_bidder, bid_count, status, _) = load_storage();
+    return (start_price, reserve_price, min_bid_increment, start_time, end_time,
+            highest_bid, bid_count, highest_bidder, status, now());
+}
+
+(slice, slice, slice) get_auction_addresses() method_id {
+    var (marketplace, nft, seller, _, _, _, _, _, _, _, _, _, _) = load_storage();
+    return (marketplace, nft, seller);
+}
+
+int get_time_remaining() method_id {
+    var (_, _, _, _, _, _, _, _, end_time, _, _, _, status, _) = load_storage();
+    if (status != 1) {
+        return 0;
+    }
+    int remaining = end_time - now();
+    return remaining > 0 ? remaining : 0;
+}
+
+(int, int, slice) get_highest_bid() method_id {
+    var (_, _, _, _, _, _, _, _, _, highest_bid, highest_bidder, _, _, _) = load_storage();
+    return (highest_bid, highest_bidder.slice_bits() == 267 ? 1 : 0, highest_bidder);
+}
+
+int get_bid_count() method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, bid_count, _, _) = load_storage();
+    return bid_count;
+}

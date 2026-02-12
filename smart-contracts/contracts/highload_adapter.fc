@@ -1,0 +1,456 @@
+;; ============================================
+;; HIGHLOAD WALLET ADAPTER
+;; Integrates highload-wallet-contract-v3 for NFT categories
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+
+;; ============================================
+;; HIGHLOAD WALLET CONSTANTS
+;; ============================================
+const int HIGHLOAD_TIMEOUT = 600;           ;; 10 minutes
+const int HIGHLOAD_MAX_MESSAGES = 1000;     ;; Max messages per query
+const int HIGHLOAD_MESSAGE_SIZE = 1024;     ;; Max message size in bytes
+const int HIGHLOAD_WALLET_VERSION = 3;
+
+;; ============================================
+;; HIGHLOAD WALLET INTERFACE
+;; ============================================
+
+;; Deploy highload wallet for a new NFT category
+() deploy_highload_wallet(
+    slice admin_address,
+    int category_id,
+    slice category_name,
+    int wallet_id,
+    cell wallet_code
+) impure inline {
+    ;; Build highload wallet state init
+    cell state_init = build_highload_state_init(
+        admin_address,
+        wallet_id,
+        wallet_code
+    );
+    
+    slice wallet_address = calculate_address(state_init);
+    
+    ;; Deploy wallet with initial funds
+    cell deploy_body = begin_cell()
+        .store_uint(0x0dd607e3, 32)      ;; Initialize wallet
+        .store_uint(category_id, 256)
+        .store_slice(category_name)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(wallet_address)
+        .store_coins(100000000)          ;; 0.1 TON for deployment
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(deploy_body)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    return ();
+}
+
+;; Build highload wallet state init
+cell build_highload_state_init(
+    slice admin_address,
+    int wallet_id,
+    cell wallet_code
+) inline {
+    cell data = begin_cell()
+        .store_slice(admin_address)
+        .store_uint(wallet_id, 32)
+        .store_uint(0, 64)               ;; last_cleaned
+        .store_dict(new_dict())          ;; queries dict
+        .end_cell();
+    
+    return begin_cell()
+        .store_uint(0, 2)                ;; 0b00 - no split/merge
+        .store_dict(wallet_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+;; Calculate highload wallet address
+slice calculate_address(cell state_init) inline {
+    int hash = cell_hash(state_init);
+    return begin_cell()
+        .store_uint(4, 3)                ;; 0b100 = addr_std$10 + anycast null
+        .store_int(0, 8)                 ;; workchain 0
+        .store_uint(hash, 256)
+        .end_cell()
+        .begin_parse();
+}
+
+;; ============================================
+;; HIGHLOAD MESSAGE PROCESSING
+;; ============================================
+
+;; Send message through highload wallet
+() send_via_highload(
+    slice highload_wallet,
+    cell message,
+    int query_id,
+    int expire_at
+) impure inline {
+    throw_unless(ERR_HIGHLOAD_EXPIRED, expire_at > now());
+    throw_unless(ERR_HIGHLOAD_INVALID_QUERY_ID, query_id >= 0);
+    
+    cell highload_msg = begin_cell()
+        .store_uint(0xae42e5a4, 32)      ;; highload::process_message
+        .store_uint(query_id, 64)
+        .store_uint(expire_at, 64)
+        .store_ref(message)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(10000000)           ;; Gas for processing
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(highload_msg)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    return ();
+}
+
+;; Send batch messages through highload wallet
+() send_batch_via_highload(
+    slice highload_wallet,
+    cell messages,                     ;; Dict of messages
+    int count,
+    int query_id,
+    int expire_at
+) impure inline {
+    throw_unless(ERR_BATCH_TOO_LARGE, count <= HIGHLOAD_MAX_MESSAGES);
+    throw_unless(ERR_HIGHLOAD_EXPIRED, expire_at > now());
+    
+    cell batch_msg = begin_cell()
+        .store_uint(0x0ec3c86d, 32)      ;; highload::process_batch
+        .store_uint(query_id, 64)
+        .store_uint(expire_at, 64)
+        .store_uint(count, 16)
+        .store_ref(messages)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(10000000 * count)   ;; Gas proportional to count
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(batch_msg)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    return ();
+}
+
+;; ============================================
+;; NFT-SPECIFIC HIGHLOAD OPERATIONS
+;; ============================================
+
+;; Mint NFT through highload wallet
+() highload_mint_nft(
+    slice highload_wallet,
+    int query_id,
+    int category_id,
+    int nft_index,
+    cell nft_data,
+    cell nft_code,
+    slice owner_address
+) impure inline {
+    ;; Build NFT mint message
+    cell mint_msg = build_nft_mint_message(
+        category_id,
+        nft_index,
+        nft_data,
+        nft_code,
+        owner_address
+    );
+    
+    ;; Send via highload
+    send_via_highload(
+        highload_wallet,
+        mint_msg,
+        query_id,
+        now() + HIGHLOAD_TIMEOUT
+    );
+    
+    return ();
+}
+
+;; Build NFT mint message
+cell build_nft_mint_message(
+    int category_id,
+    int nft_index,
+    cell nft_data,
+    cell nft_code,
+    slice owner_address
+) inline {
+    ;; Calculate NFT item address
+    cell state_init = build_nft_state_init(category_id, nft_index, nft_data, nft_code);
+    slice nft_address = calculate_address(state_init);
+    
+    ;; Build transfer to owner
+    return begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(20000000)           ;; 0.02 TON for NFT deployment
+        .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(state_init)
+        .store_ref(begin_cell()
+            .store_uint(OP_TRANSFER, 32)
+            .store_uint(0, 64)
+            .store_slice(owner_address)
+            .store_slice(owner_address)
+            .store_uint(0, 1)
+            .store_coins(0)
+            .store_uint(0, 1)
+            .end_cell())
+        .end_cell();
+}
+
+;; Build NFT state init
+cell build_nft_state_init(
+    int category_id,
+    int index,
+    cell nft_data,
+    cell nft_code
+) inline {
+    cell data = begin_cell()
+        .store_uint(index, 64)
+        .store_uint(category_id, 256)
+        .store_ref(nft_data)
+        .store_uint(0, 1)                ;; is_initialized
+        .end_cell();
+    
+    return begin_cell()
+        .store_uint(0, 2)
+        .store_dict(nft_code)
+        .store_dict(data)
+        .store_uint(0, 1)
+        .end_cell();
+}
+
+;; Transfer NFT through highload
+() highload_transfer_nft(
+    slice highload_wallet,
+    int query_id,
+    slice nft_address,
+    slice from_address,
+    slice to_address,
+    int forward_amount
+) impure inline {
+    cell transfer_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(GAS_TRANSFER + forward_amount)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(begin_cell()
+            .store_uint(OP_TRANSFER, 32)
+            .store_uint(query_id, 64)
+            .store_slice(to_address)
+            .store_slice(from_address)
+            .store_uint(0, 1)
+            .store_coins(forward_amount)
+            .store_uint(0, 1)
+            .end_cell())
+        .end_cell();
+    
+    send_via_highload(
+        highload_wallet,
+        transfer_msg,
+        query_id,
+        now() + HIGHLOAD_TIMEOUT
+    );
+    
+    return ();
+}
+
+;; Batch mint NFTs through highload
+() highload_batch_mint(
+    slice highload_wallet,
+    int query_id,
+    int category_id,
+    cell batch_data,
+    int batch_size,
+    cell nft_code,
+    slice owner_address
+) impure inline {
+    throw_unless(ERR_BATCH_TOO_LARGE, batch_size <= BATCH_LIMIT);
+    
+    ;; Build batch mint messages
+    cell messages = new_dict();
+    int i = 0;
+    
+    while (i < batch_size) {
+        ;; Get NFT data from batch
+        (slice nft_info, int found) = batch_data.udict_get?(256, i);
+        if (found) {
+            ;; Parse NFT data
+            slice info_cs = nft_info.begin_parse();
+            int nft_index = info_cs~load_uint(64);
+            cell nft_metadata = info_cs~load_ref();
+            
+            ;; Build mint message
+            cell mint_msg = build_nft_mint_message(
+                category_id,
+                nft_index,
+                nft_metadata,
+                nft_code,
+                owner_address
+            );
+            
+            ;; Add to messages dict
+            messages~udict_set_ref(16, i, mint_msg);
+        }
+        i = i + 1;
+    }
+    
+    ;; Send batch
+    send_batch_via_highload(
+        highload_wallet,
+        messages,
+        batch_size,
+        query_id,
+        now() + HIGHLOAD_TIMEOUT
+    );
+    
+    return ();
+}
+
+;; ============================================
+;; HIGHLOAD WALLET MONITORING
+;; ============================================
+
+;; Check highload wallet status
+() query_highload_status(
+    slice highload_wallet,
+    int query_id
+) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(10000000)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0x0ed7eba1, 32)      ;; highload::get_stats
+        .store_uint(query_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 0);
+    
+    return ();
+}
+
+;; Clean expired queries in highload wallet
+() cleanup_highload_queries(
+    slice highload_wallet,
+    int query_id,
+    int max_queries
+) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(10000000)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0x8293a5bf, 32)      ;; highload::cleanup
+        .store_uint(query_id, 64)
+        .store_uint(max_queries, 16)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    return ();
+}
+
+;; ============================================
+;; CATEGORY MANAGEMENT
+;; ============================================
+
+;; Create new NFT category with highload wallet
+() create_category_with_highload(
+    slice sender,
+    int query_id,
+    slice category_name,
+    cell wallet_code,
+    int wallet_id
+) impure inline {
+    ;; Generate unique category ID
+    int category_id = cell_hash(
+        begin_cell()
+            .store_slice(category_name)
+            .store_uint(now(), 64)
+            .store_uint(wallet_id, 32)
+            .end_cell()
+    );
+    
+    ;; Deploy highload wallet for this category
+    deploy_highload_wallet(
+        sender,
+        category_id,
+        category_name,
+        wallet_id,
+        wallet_code
+    );
+    
+    ;; Emit category creation event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_CATEGORY_CREATED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(category_id, 256)
+        .store_slice(category_name)
+        .store_uint(wallet_id, 32)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return category_id;
+}
+
+;; ============================================
+;; FEE OPTIMIZATION
+;; ============================================
+
+;; Calculate optimal batch size for highload operations
+int calculate_optimal_batch_size(int num_operations) inline {
+    if (num_operations <= 10) {
+        return num_operations;
+    }
+    if (num_operations <= 100) {
+        return 10 + ((num_operations - 10) / 2);
+    }
+    return min(num_operations / 10, HIGHLOAD_MAX_MESSAGES);
+}
+
+;; Estimate gas for highload operation
+int estimate_highload_gas(int num_messages) inline {
+    int base_gas = 10000000;            ;; Base overhead
+    int per_msg_gas = 5000000;          ;; Gas per message
+    return base_gas + (per_msg_gas * num_messages);
+}
+
+;; Verify highload message signature (if needed)
+int verify_highload_signature(
+    slice message,
+    slice signature,
+    slice public_key
+) inline {
+    ;; Implementation depends on signature scheme
+    ;; This is a placeholder
+    return 1;
+}

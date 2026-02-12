@@ -1,0 +1,93 @@
+;; ============================================
+;; ERROR CODES
+;; ============================================
+
+;; Authentication/Authorization Errors (100-199)
+const int ERR_UNAUTHORIZED = 100;
+const int ERR_INVALID_SIGNATURE = 101;
+const int ERR_INVALID_SENDER = 102;
+const int ERR_NOT_OWNER = 103;
+const int ERR_NOT_ADMIN = 104;
+const int ERR_NOT_OPERATOR = 105;
+const int ERR_BLACKLISTED = 106;
+
+;; Validation Errors (200-299)
+const int ERR_INVALID_OP = 200;
+const int ERR_INVALID_PARAM = 201;
+const int ERR_INVALID_ADDRESS = 202;
+const int ERR_INVALID_AMOUNT = 203;
+const int ERR_INVALID_FEE = 204;
+const int ERR_INVALID_TIME = 205;
+const int ERR_INVALID_PRICE = 206;
+const int ERR_PRICE_TOO_LOW = 207;
+const int ERR_INVALID_INDEX = 208;
+const int ERR_INVALID_DATA = 209;
+const int ERR_INVALID_HASH = 210;
+
+;; State Errors (300-399)
+const int ERR_ALREADY_EXISTS = 300;
+const int ERR_NOT_FOUND = 301;
+const int ERR_ALREADY_INITIALIZED = 302;
+const int ERR_NOT_INITIALIZED = 303;
+const int ERR_PAUSED = 304;
+const int ERR_NOT_PAUSED = 305;
+const int ERR_EXPIRED = 306;
+const int ERR_NOT_EXPIRED = 307;
+const int ERR_CATEGORY_EXISTS = 308;
+const int ERR_CATEGORY_NOT_FOUND = 309;
+const int ERR_CATEGORY_INACTIVE = 310;
+const int ERR_NFT_NOT_FOUND = 311;
+const int ERR_NFT_NOT_FOR_SALE = 312;
+const int ERR_AUCTION_NOT_FOUND = 313;
+const int ERR_AUCTION_ENDED = 314;
+const int ERR_AUCTION_NOT_ENDED = 315;
+const int ERR_OFFER_NOT_FOUND = 316;
+const int ERR_OFFER_EXPIRED = 317;
+
+;; Transaction Errors (400-499)
+const int ERR_INSUFFICIENT_FUNDS = 400;
+const int ERR_INSUFFICIENT_BALANCE = 401;
+const int ERR_TRANSFER_FAILED = 402;
+const int ERR_BID_TOO_LOW = 403;
+const int ERR_NOT_HIGHEST_BIDDER = 404;
+const int ERR_DOUBLE_SPEND = 405;
+const int ERR_REPLAY_ATTACK = 406;
+const int ERR_BATCH_TOO_LARGE = 407;
+const int ERR_BATCH_TOO_SMALL = 408;
+
+;; Highload Wallet Errors (500-599)
+const int ERR_HIGHLOAD_OVERFLOW = 500;
+const int ERR_HIGHLOAD_EXPIRED = 501;
+const int ERR_HIGHLOAD_INVALID_QUERY_ID = 502;
+const int ERR_HIGHLOAD_ALREADY_PROCESSED = 503;
+const int ERR_HIGHLOAD_INVALID_SIGNATURE = 504;
+const int ERR_HIGHLOAD_SUBWALLET_MISMATCH = 505;
+const int ERR_HIGHLOAD_MESSAGE_TOO_LARGE = 506;
+
+;; Virtual Balance Errors (600-699)
+const int ERR_VIRTUAL_BALANCE_NOT_FOUND = 600;
+const int ERR_VIRTUAL_BALANCE_INSUFFICIENT = 601;
+const int ERR_VIRTUAL_WITHDRAW_PENDING = 602;
+const int ERR_VIRTUAL_DEPOSIT_PENDING = 603;
+const int ERR_VIRTUAL_INVALID_HASH = 604;
+
+;; NFT Standard Errors (700-799)
+const int ERR_NFT_INVALID_STANDARD = 700;
+const int ERR_NFT_UNSUPPORTED_TYPE = 701;
+const int ERR_NFT_INVALID_METADATA = 702;
+const int ERR_NFT_INVALID_ROYALTY = 703;
+const int ERR_NFT_INVALID_COLLECTION = 704;
+
+;; System Errors (800-899)
+const int ERR_OUT_OF_GAS = 800;
+const int ERR_CELL_OVERFLOW = 801;
+const int ERR_CELL_UNDERFLOW = 802;
+const int ERR_DICT_ERROR = 803;
+const int ERR_SLICE_ERROR = 804;
+const int ERR_BUILDER_ERROR = 805;
+const int ERR_CONTRACT_PAUSED = 806;
+
+;; Rate Limiting (900-999)
+const int ERR_RATE_LIMIT_EXCEEDED = 900;
+const int ERR_TOO_MANY_REQUESTS = 901;
+const int ERR_COOLDOWN_ACTIVE = 902;

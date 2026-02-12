@@ -1,0 +1,633 @@
+;; ============================================
+;; VIRTUAL BALANCE MANAGER
+;; Manages off-chain balances for fee optimization
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+
+;; ============================================
+;; STORAGE LAYOUT
+;; ============================================
+;; storage#_ 
+;;   admin_address:MsgAddress
+;;   marketplace_address:MsgAddress
+;;   deposit_wallet:MsgAddress
+;;   withdraw_wallet:MsgAddress
+;;   balances:(HashmapE 256 Balance)
+;;   pending_deposits:(HashmapE 256 PendingTx)
+;;   pending_withdrawals:(HashmapE 256 PendingTx)
+;;   processed_hashes:(HashmapE 256 ProcessedHash)
+;;   total_virtual_balance:Coins
+;;   min_deposit:Coins
+;;   min_withdraw:Coins
+;;   = Storage;
+
+;; Balance: amount:Coins, last_update:uint64
+;; PendingTx: user:MsgAddress, amount:Coins, hash:uint256, timestamp:uint64
+;; ProcessedHash: timestamp:uint64
+
+;; ============================================
+;; LOAD/SAVE STORAGE
+;; ============================================
+(
+    slice, slice, slice, slice,
+    cell, cell, cell, cell,
+    int, int, int, int
+) load_storage() inline {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),            ;; admin_address
+        ds~load_msg_addr(),            ;; marketplace_address
+        ds~load_msg_addr(),            ;; deposit_wallet
+        ds~load_msg_addr(),            ;; withdraw_wallet
+        ds~load_dict(),                ;; balances
+        ds~load_dict(),                ;; pending_deposits
+        ds~load_dict(),                ;; pending_withdrawals
+        ds~load_dict(),                ;; processed_hashes
+        ds~load_coins(),               ;; total_virtual_balance
+        ds~load_coins(),               ;; min_deposit
+        ds~load_coins()                ;; min_withdraw
+    );
+}
+
+() save_storage(
+    slice admin,
+    slice marketplace,
+    slice deposit,
+    slice withdraw,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(admin)
+        .store_slice(marketplace)
+        .store_slice(deposit)
+        .store_slice(withdraw)
+        .store_dict(balances)
+        .store_dict(pending_deps)
+        .store_dict(pending_wds)
+        .store_dict(processed_hashes)
+        .store_coins(total_balance)
+        .store_coins(min_deposit)
+        .store_coins(min_withdraw)
+        .end_cell());
+}
+
+;; ============================================
+;; BALANCE OPERATIONS
+;; ============================================
+
+;; Get user balance
+(int, int) get_user_balance(cell balances, slice user) inline {
+    int user_hash = slice_hash(user);
+    (slice data, int found) = balances.udict_get?(256, user_hash);
+    
+    if (found) {
+        slice cs = data.begin_parse();
+        return (cs~load_coins(), cs~load_uint(64));
+    }
+    return (0, 0);
+}
+
+;; Update user balance
+() update_user_balance(
+    cell balances,
+    slice user,
+    int new_amount,
+    int timestamp
+) inline {
+    int user_hash = slice_hash(user);
+    cell new_data = begin_cell()
+        .store_coins(new_amount)
+        .store_uint(timestamp, 64)
+        .end_cell();
+    balances~udict_set(256, user_hash, new_data);
+}
+
+;; ============================================
+;; HASH VALIDATION
+;; ============================================
+
+;; Check if hash was already processed
+int is_hash_processed(cell processed_hashes, int hash) inline {
+    (slice data, int found) = processed_hashes.udict_get?(256, hash);
+    return found;
+}
+
+;; Mark hash as processed
+() mark_hash_processed(
+    cell processed_hashes,
+    int hash,
+    int timestamp
+) inline {
+    cell data = begin_cell().store_uint(timestamp, 64).end_cell();
+    processed_hashes~udict_set(256, hash, data);
+}
+
+;; Verify deposit hash
+int verify_deposit_hash(
+    slice user,
+    int amount,
+    int timestamp,
+    int expected_hash
+) inline {
+    cell data = begin_cell()
+        .store_slice(user)
+        .store_coins(amount)
+        .store_uint(timestamp, 64)
+        .end_cell();
+    return cell_hash(data) == expected_hash;
+}
+
+;; ============================================
+;; DEPOSIT OPERATIONS
+;; ============================================
+
+;; Confirm deposit from on-chain
+() op_confirm_deposit(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    ;; Only marketplace or admin can confirm deposits
+    throw_unless(ERR_UNAUTHORIZED, 
+        equal_slices(sender, marketplace) | equal_slices(sender, admin));
+    
+    slice user = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_coins();
+    int hash = in_msg_body~load_uint(256);
+    int timestamp = in_msg_body~load_uint(64);
+    
+    ;; Validate
+    throw_unless(ERR_INVALID_AMOUNT, amount >= min_deposit);
+    throw_if(ERR_VIRTUAL_INVALID_HASH, is_hash_processed(processed_hashes, hash));
+    
+    ;; Verify hash (optional - depends on security model)
+    ;; throw_unless(ERR_VIRTUAL_INVALID_HASH, 
+    ;;     verify_deposit_hash(user, amount, timestamp, hash));
+    
+    ;; Update balance
+    (int current_balance, _) = get_user_balance(balances, user);
+    int new_balance = current_balance + amount;
+    update_user_balance(balances, user, new_balance, now());
+    
+    ;; Mark hash as processed
+    mark_hash_processed(processed_hashes, hash, now());
+    
+    ;; Update total
+    int new_total = total_balance + amount;
+    
+    ;; Save
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 new_total, min_deposit, min_withdraw);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(user)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_DEPOSIT_CONFIRMED, 32)
+        .store_uint(query_id, 64)
+        .store_coins(amount)
+        .store_coins(new_balance)
+        .store_uint(hash, 256)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; WITHDRAWAL OPERATIONS
+;; ============================================
+
+;; Request withdrawal
+() op_request_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    ;; Only marketplace can request withdrawals
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, marketplace));
+    
+    slice user = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_coins();
+    int hash = in_msg_body~load_uint(256);
+    int timestamp = in_msg_body~load_uint(64);
+    
+    ;; Validate
+    throw_unless(ERR_INVALID_AMOUNT, amount >= min_withdraw);
+    throw_if(ERR_VIRTUAL_INVALID_HASH, is_hash_processed(processed_hashes, hash));
+    
+    ;; Check user balance
+    (int user_balance, _) = get_user_balance(balances, user);
+    throw_unless(ERR_VIRTUAL_BALANCE_INSUFFICIENT, user_balance >= amount);
+    
+    ;; Create pending withdrawal
+    int pending_id = cell_hash(
+        begin_cell()
+            .store_slice(user)
+            .store_coins(amount)
+            .store_uint(now(), 64)
+            .end_cell()
+    );
+    
+    cell pending_data = begin_cell()
+        .store_slice(user)
+        .store_coins(amount)
+        .store_uint(hash, 256)
+        .store_uint(timestamp, 64)
+        .end_cell();
+    
+    pending_wds~udict_set(256, pending_id, pending_data);
+    
+    ;; Deduct from user balance
+    update_user_balance(balances, user, user_balance - amount, now());
+    
+    ;; Update total
+    int new_total = total_balance - amount;
+    
+    ;; Mark hash as processed
+    mark_hash_processed(processed_hashes, hash, now());
+    
+    ;; Save
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 new_total, min_deposit, min_withdraw);
+    
+    ;; Notify admin
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_WITHDRAW_REQUEST, 32)
+        .store_uint(query_id, 64)
+        .store_uint(pending_id, 256)
+        .store_ref(pending_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Confirm withdrawal processed (by admin)
+() op_confirm_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    ;; Only admin can confirm withdrawals
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    int pending_id = in_msg_body~load_uint(256);
+    slice tx_hash = in_msg_body~load_ref().begin_parse();
+    
+    ;; Get pending withdrawal
+    (slice pending_data, int found) = pending_wds.udict_get?(256, pending_id);
+    throw_unless(ERR_NOT_FOUND, found);
+    
+    slice cs = pending_data.begin_parse();
+    slice user = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    ;; Remove from pending
+    pending_wds~udict_delete?(256, pending_id);
+    
+    ;; Save
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 total_balance, min_deposit, min_withdraw);
+    
+    ;; Notify user
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(user)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_WITHDRAW_CONFIRMED, 32)
+        .store_uint(query_id, 64)
+        .store_coins(amount)
+        .store_ref(tx_hash)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Cancel withdrawal (if failed)
+() op_cancel_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    ;; Only admin can cancel
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    int pending_id = in_msg_body~load_uint(256);
+    slice reason = in_msg_body~load_ref().begin_parse();
+    
+    ;; Get pending withdrawal
+    (slice pending_data, int found) = pending_wds.udict_get?(256, pending_id);
+    throw_unless(ERR_NOT_FOUND, found);
+    
+    slice cs = pending_data.begin_parse();
+    slice user = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    
+    ;; Refund user
+    (int current_balance, _) = get_user_balance(balances, user);
+    update_user_balance(balances, user, current_balance + amount, now());
+    
+    ;; Remove from pending
+    pending_wds~udict_delete?(256, pending_id);
+    
+    ;; Update total
+    int new_total = total_balance + amount;
+    
+    ;; Save
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 new_total, min_deposit, min_withdraw);
+    
+    ;; Notify user
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(user)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_WITHDRAW_CONFIRMED, 32)
+        .store_uint(query_id, 64)
+        .store_coins(0)  ;; 0 amount = cancelled
+        .store_ref(reason)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; INTERNAL TRANSFERS
+;; ============================================
+
+;; Transfer between virtual balances
+() op_internal_transfer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    ;; Only marketplace can do internal transfers
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, marketplace));
+    
+    slice from_user = in_msg_body~load_msg_addr();
+    slice to_user = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_coins();
+    int reason = in_msg_body~load_uint(32);
+    
+    ;; Validate
+    throw_unless(ERR_INVALID_AMOUNT, amount > 0);
+    throw_if(ERR_INVALID_ADDRESS, equal_slices(from_user, to_user));
+    
+    ;; Check from_user balance
+    (int from_balance, _) = get_user_balance(balances, from_user);
+    throw_unless(ERR_VIRTUAL_BALANCE_INSUFFICIENT, from_balance >= amount);
+    
+    ;; Update balances
+    update_user_balance(balances, from_user, from_balance - amount, now());
+    
+    (int to_balance, _) = get_user_balance(balances, to_user);
+    update_user_balance(balances, to_user, to_balance + amount, now());
+    
+    ;; Save (total balance unchanged)
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 total_balance, min_deposit, min_withdraw);
+    
+    ;; Notify users
+    var msg_from = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(from_user)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_TRANSFER, 32)
+        .store_uint(query_id, 64)
+        .store_coins(-amount)
+        .store_slice(to_user)
+        .store_uint(reason, 32)
+        .end_cell();
+    
+    send_raw_message(msg_from, 64);
+    
+    var msg_to = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(to_user)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_VIRTUAL_TRANSFER, 32)
+        .store_uint(query_id, 64)
+        .store_coins(amount)
+        .store_slice(from_user)
+        .store_uint(reason, 32)
+        .end_cell();
+    
+    send_raw_message(msg_to, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; ADMIN OPERATIONS
+;; ============================================
+
+;; Set minimum amounts
+() op_set_limits(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice marketplace,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    cell balances,
+    cell pending_deps,
+    cell pending_wds,
+    cell processed_hashes,
+    int total_balance,
+    int min_deposit,
+    int min_withdraw
+) impure inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    int new_min_deposit = in_msg_body~load_coins();
+    int new_min_withdraw = in_msg_body~load_coins();
+    
+    save_storage(admin, marketplace, deposit_wallet, withdraw_wallet,
+                 balances, pending_deps, pending_wds, processed_hashes,
+                 total_balance, new_min_deposit, new_min_withdraw);
+    
+    return ();
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    var (admin, marketplace, deposit, withdraw, balances, 
+         pending_deps, pending_wds, processed_hashes,
+         total_balance, min_deposit, min_withdraw) = load_storage();
+    
+    if (op == OP_VIRTUAL_DEPOSIT_CONFIRMED) {
+        op_confirm_deposit(sender, query_id, in_msg_body,
+            admin, marketplace, deposit, withdraw,
+            balances, pending_deps, pending_wds, processed_hashes,
+            total_balance, min_deposit, min_withdraw);
+        return ();
+    }
+    
+    if (op == OP_VIRTUAL_WITHDRAW_REQUEST) {
+        op_request_withdraw(sender, query_id, in_msg_body,
+            admin, marketplace, deposit, withdraw,
+            balances, pending_deps, pending_wds, processed_hashes,
+            total_balance, min_deposit, min_withdraw);
+        return ();
+    }
+    
+    if (op == OP_VIRTUAL_WITHDRAW_CONFIRMED) {
+        op_confirm_withdraw(sender, query_id, in_msg_body,
+            admin, marketplace, deposit, withdraw,
+            balances, pending_deps, pending_wds, processed_hashes,
+            total_balance, min_deposit, min_withdraw);
+        return ();
+    }
+    
+    if (op == OP_VIRTUAL_TRANSFER) {
+        op_internal_transfer(sender, query_id, in_msg_body,
+            admin, marketplace, deposit, withdraw,
+            balances, pending_deps, pending_wds, processed_hashes,
+            total_balance, min_deposit, min_withdraw);
+        return ();
+    }
+    
+    if (op == 0x9002) {  ;; Admin set limits
+        op_set_limits(sender, query_id, in_msg_body,
+            admin, marketplace, deposit, withdraw,
+            balances, pending_deps, pending_wds, processed_hashes,
+            total_balance, min_deposit, min_withdraw);
+        return ();
+    }
+    
+    throw(ERR_INVALID_OP);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+(int, int) get_user_virtual_balance(slice user) method_id {
+    var (_, _, _, _, balances, _, _, _, _, _, _) = load_storage();
+    return get_user_balance(balances, user);
+}
+
+int get_total_virtual_balance() method_id {
+    var (_, _, _, _, _, _, _, _, total, _, _) = load_storage();
+    return total;
+}
+
+(int, int) get_limits() method_id {
+    var (_, _, _, _, _, _, _, _, _, min_dep, min_wd) = load_storage();
+    return (min_dep, min_wd);
+}
+
+(slice, slice, slice, slice) get_wallets() method_id {
+    var (admin, marketplace, deposit, withdraw, _, _, _, _, _, _, _) = load_storage();
+    return (admin, marketplace, deposit, withdraw);
+}
+
+int is_hash_used(int hash) method_id {
+    var (_, _, _, _, _, _, _, processed_hashes, _, _, _) = load_storage();
+    return is_hash_processed(processed_hashes, hash);
+}

@@ -1,0 +1,199 @@
+;; ============================================
+;; STDLIB - Standard Library for FunC
+;; ============================================
+
+;; Slice operations
+forall X -> X __tact_load_address(slice cs) asm(-> 1 0) "LDMSGADDR";
+forall X -> (slice, X) __tact_load_address_as_slice(slice cs) asm "LDMSGADDR";
+
+slice __tact_verify_address(slice address) inline {
+    throw_unless(136, address.slice_bits() == 267);
+    return address;
+}
+
+;; Integer operations
+int __tact_abs(int x) {
+    return x >= 0 ? x : -x;
+}
+
+int __tact_max(int x, int y) {
+    return x > y ? x : y;
+}
+
+int __tact_min(int x, int y) {
+    return x < y ? x : y;
+}
+
+;; Cell operations
+cell __tact_dict_delete?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTDEL";
+
+;; Address operations
+(slice, slice) __tact_unpack_address(slice address) inline {
+    var h = address.preload_uint(11);
+    throw_unless(136, h == 1024 | h == 1472);
+    var basechain = h == 1024;
+    address~skip_bits(3);
+    if (basechain) {
+        address~skip_bits(8);
+    } else {
+        address~skip_bits(32);
+    }
+    return (address~load_bits(256), address);
+}
+
+;; String operations
+builder __tact_store_bool(builder b, int v) asm "1 STI";
+
+;; Context operations
+(int, slice, int, slice) __tact_context_get() inline {
+    var cs = in_msg_full.begin_parse();
+    var s = cs~load_uint(4);
+    var m = cs~load_msg_addr();
+    var i = cs~load_int(64);
+    var n = cs~load_msg_addr();
+    return (s, m, i, n);
+}
+
+;; Math operations
+int __tact_pow(int a, int b) inline {
+    int result = 1;
+    repeat(b) {
+        result *= a;
+    }
+    return result;
+}
+
+int __tact_div(int a, int b) inline {
+    return a / b;
+}
+
+int __tact_mod(int a, int b) inline {
+    return a % b;
+}
+
+;; Random
+int random(int min, int max) inline {
+    return min + (rand() % (max - min + 1));
+}
+
+;; Time
+int now() asm "NOW";
+
+;; Balance
+int my_balance() asm "BALANCE";
+
+;; Address
+slice my_address() asm "MYADDR";
+
+;; Hash
+int cell_hash(cell c) asm "HASHCU";
+int slice_hash(slice s) asm "HASHSU";
+
+;; Send
+() send_raw_message(cell msg, int mode) impure asm "SENDRAWMSG";
+
+;; Throw
+() throw(int exit_code) impure asm "THROW";
+() throw_if(int cond, int exit_code) impure asm "THROWIF";
+() throw_unless(int cond, int exit_code) impure asm "THROWIFNOT";
+
+;; Slice helpers
+int slice_empty?(slice s) asm "SEMPTY";
+int slice_data_empty?(slice s) asm "SDEMPTY";
+int slice_refs_empty?(slice s) asm "SREMPTY";
+int slice_bits(slice s) asm "SBITS";
+int slice_refs(slice s) asm "SREFS";
+
+;; Builder helpers
+builder begin_cell() asm "NEWC";
+cell end_cell(builder b) asm "ENDC";
+builder store_ref(builder b, cell c) asm(c b) "STREF";
+builder store_uint(builder b, int x, int len) asm(x b len) "STUX";
+builder store_int(builder b, int x, int len) asm(x b len) "STIX";
+builder store_slice(builder b, slice s) asm "STSLICER";
+builder store_grams(builder b, int x) asm "STGRAMS";
+builder store_coins(builder b, int x) asm "STVARUINT16";
+
+;; Slice loading
+(slice, int) load_uint(slice s, int len) asm(-> 1 0) "LDUX";
+(slice, int) load_int(slice s, int len) asm(-> 1 0) "LDIX";
+(slice, slice) load_bits(slice s, int len) asm(-> 1 0) "LDSLICEX";
+(slice, cell) load_ref(slice s) asm(-> 1 0) "LDREF";
+(slice, slice) load_slice(slice s, int len) asm(-> 1 0) "LDSLICEX";
+
+;; Address loading
+(slice, slice) load_msg_addr(slice s) asm(-> 1 0) "LDMSGADDR";
+
+;; Special
+int get_data() asm "c4 PUSH";
+() set_data(cell c) impure asm "c4 POP";
+cell get_data_cell() asm "c4 PUSH";
+
+;; Dictionary operations
+new_dict() asm "NEWDICT";
+int dict_empty?(cell d) asm "DICTEMPTY";
+int dict_count?(cell d, int n) asm "DICTCOUNT";
+
+(cell, int) udict_get?(cell dict, int key_len, int index) asm(index dict key_len) "DICTUGET" "NULLSWAPIFNOT";
+(cell, (slice, int)) idict_get?(cell dict, int key_len, int index) asm(index dict key_len) "DICTIGET" "NULLSWAPIFNOT";
+(cell, (slice, int)) sdict_get?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTGET" "NULLSWAPIFNOT";
+
+cell udict_set(cell dict, int key_len, int index, slice value) asm(value index dict key_len) "DICTUSET";
+cell idict_set(cell dict, int key_len, int index, slice value) asm(value index dict key_len) "DICTISET";
+cell sdict_set(cell dict, int key_len, slice index, slice value) asm(value index dict key_len) "DICTSET";
+
+cell udict_set_ref(cell dict, int key_len, int index, cell value) asm(value index dict key_len) "DICTUSETREF";
+cell idict_set_ref(cell dict, int key_len, int index, cell value) asm(value index dict key_len) "DICTISETREF";
+cell sdict_set_ref(cell dict, int key_len, slice index, cell value) asm(value index dict key_len) "DICTSETREF";
+
+cell udict_delete?(cell dict, int key_len, int index) asm(index dict key_len) "DICTUDEL";
+
+;; Message mode constants
+const int SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE = 64;
+const int SEND_MODE_PAY_GAS_SEPARATELY = 1;
+const int SEND_MODE_IGNORE_ERRORS = 2;
+const int SEND_MODE_BOUNCE_ON_ACTION_FAIL = 16;
+const int SEND_MODE_DESTROY_ACCOUNT_IF_ZERO = 32;
+
+;; Global variables
+global cell in_msg_full;
+global int in_msg_value;
+
+;; Initialize globals
+() init_globals() impure {
+    in_msg_full = get_data();
+    ;; This would be set by the system
+}
+
+;; Helpers for loading
+int load_coins(slice s) asm(-> 1 0) "LDVARUINT16";
+(slice, int) load_coins_from_slice(slice s) asm(-> 1 0) "LDVARUINT16";
+
+;; Cell serialization
+cell __tact_to_cell(builder b) asm "ENDC";
+builder __tact_from_cell(cell c) asm "CTOS" "NEWC";
+
+;; Utility
+int __tact_str_is_not_empty(slice s) inline {
+    return s.slice_bits() / 8 > 0;
+}
+
+;; NanoTon conversion
+int __tact_to_nanoton(int toncoins) inline {
+    return toncoins * 1000000000;
+}
+
+int __tact_from_nanoton(int nanoton) inline {
+    return nanoton / 1000000000;
+}
+
+;; Gas constants
+const int GAS_CONSUMED = 10000000;
+const int GAS_MINT = 20000000;
+const int GAS_TRANSFER = 15000000;
+const int GAS_BURN = 10000000;
+const int GAS_BATCH = 50000000;
+
+;; Security
+int __tact_verify_ed25519(slice signature, slice data, int public_key) asm "ED25519_CHKSIGNU";
+int __tact_compute_sha256(slice data) asm "SHA256U";

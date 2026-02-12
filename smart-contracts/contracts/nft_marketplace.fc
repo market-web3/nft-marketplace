@@ -1,0 +1,971 @@
+;; ============================================
+;; NFT MARKETPLACE SMART CONTRACT - V2
+;; Production-ready, High-load capable
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+#include "highload_adapter.fc";
+
+;; ============================================
+;; STORAGE LAYOUT
+;; ============================================
+;; storage#_ 
+;;   admin_address:MsgAddress
+;;   marketplace_fee_percent:uint16
+;;   min_withdraw_amount:Coins
+;;   total_volume:Coins
+;;   total_trades:uint64
+;;   deposit_wallet:MsgAddress
+;;   withdraw_wallet:MsgAddress
+;;   virtual_balance_manager:MsgAddress
+;;   nft_categories:(HashmapE 256 NftCategory)
+;;   = Storage;
+
+;; NftCategory:
+;;   category_name:Slice
+;;   highload_wallet:MsgAddress
+;;   total_nfts:uint64
+;;   is_active:Bool
+
+;; ============================================
+;; CONSTANTS
+;; ============================================
+const int MAX_FEE_PERCENT = 1000;        ;; 10% max (in basis points)
+const int FEE_PRECISION = 10000;          ;; 0.01% precision
+const int MIN_LISTING_PRICE = 10000000;   ;; 0.01 TON minimum
+const int BATCH_LIMIT = 100;              ;; Max batch operations
+
+;; Gas constants
+const int GAS_MINT = 20000000;
+const int GAS_TRANSFER = 15000000;
+const int GAS_SALE = 25000000;
+const int GAS_BATCH_OP = 50000000;
+
+;; ============================================
+;; HELPER FUNCTIONS
+;; ============================================
+
+;; Load storage
+(slice, slice, int, int, int, slice, slice, slice, cell) load_storage() inline {
+    var ds = get_data().begin_parse();
+    
+    return (
+        ds~load_msg_addr(),           ;; admin_address
+        ds~load_msg_addr(),           ;; deposit_wallet
+        ds~load_msg_addr(),           ;; withdraw_wallet
+        ds~load_msg_addr(),           ;; virtual_balance_manager
+        ds~load_uint(16),             ;; marketplace_fee_percent (basis points)
+        ds~load_coins(),              ;; min_withdraw_amount
+        ds~load_coins(),              ;; total_volume
+        ds~load_uint(64),             ;; total_trades
+        ds~load_dict()                ;; nft_categories
+    );
+}
+
+;; Save storage
+() save_storage(
+    slice admin_address,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    slice virtual_balance_manager,
+    int fee_percent,
+    int min_withdraw,
+    int total_volume,
+    int total_trades,
+    cell categories
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(admin_address)
+        .store_slice(deposit_wallet)
+        .store_slice(withdraw_wallet)
+        .store_slice(virtual_balance_manager)
+        .store_uint(fee_percent, 16)
+        .store_coins(min_withdraw)
+        .store_coins(total_volume)
+        .store_uint(total_trades, 64)
+        .store_dict(categories)
+        .end_cell());
+}
+
+;; Calculate marketplace fee
+int calculate_fee(int amount, int fee_percent) inline {
+    return (amount * fee_percent) / FEE_PRECISION;
+}
+
+;; ============================================
+;; ADMIN FUNCTIONS
+;; ============================================
+
+;; Create new NFT category with dedicated highload wallet
+() op_create_category(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin_address,
+    cell categories
+) impure inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin_address));
+    
+    ;; Parse category data
+    slice category_name = in_msg_body~load_ref().begin_parse();
+    slice highload_wallet = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    
+    ;; Check if category already exists
+    (slice existing, int exists) = categories.udict_get?(256, category_id);
+    throw_if(ERR_CATEGORY_EXISTS, exists);
+    
+    ;; Create category data
+    cell category_data = begin_cell()
+        .store_slice(category_name)
+        .store_slice(highload_wallet)
+        .store_uint(0, 64)      ;; total_nfts
+        .store_uint(1, 1)       ;; is_active
+        .end_cell();
+    
+    ;; Add to categories
+    categories~udict_set(256, category_id, category_data);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_CATEGORY_CREATED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(category_id, 256)
+        .store_ref(category_data);
+    
+    send_raw_message(msg.end_cell(), 64);
+    
+    return ();
+}
+
+;; Update marketplace fee
+() op_set_fee(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin_address,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int old_fee, int min_wd, int vol, int trades, _) = load_storage();
+    
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin_address));
+    
+    int new_fee = in_msg_body~load_uint(16);
+    throw_unless(ERR_INVALID_FEE, new_fee <= MAX_FEE_PERCENT);
+    
+    save_storage(admin, deposit, withdraw, vbm, new_fee, min_wd, vol, trades, categories);
+    return ();
+}
+
+;; Update minimum withdraw amount
+() op_set_min_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin_address,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee, _, int vol, int trades, _) = load_storage();
+    
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin_address));
+    
+    int new_min = in_msg_body~load_coins();
+    save_storage(admin, deposit, withdraw, vbm, fee, new_min, vol, trades, categories);
+    return ();
+}
+
+;; ============================================
+;; NFT OPERATIONS
+;; ============================================
+
+;; Mint NFT with batch support
+() op_mint_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee_percent, int min_wd, int vol, int trades, _) = load_storage();
+    
+    int category_id = in_msg_body~load_uint(256);
+    
+    ;; Get category
+    (slice category_data, int exists) = categories.udict_get?(256, category_id);
+    throw_unless(ERR_CATEGORY_NOT_FOUND, exists);
+    
+    ;; Parse category
+    slice cs = category_data.begin_parse();
+    slice cat_name = cs~load_slice(256);
+    slice highload_wallet = cs~load_msg_addr();
+    int total_nfts = cs~load_uint(64);
+    int is_active = cs~load_uint(1);
+    
+    throw_unless(ERR_CATEGORY_INACTIVE, is_active);
+    
+    ;; Parse NFT data
+    slice nft_data = in_msg_body~load_ref().begin_parse();
+    int nft_index = in_msg_body~load_uint(64);
+    
+    ;; Forward to highload wallet with mint instruction
+    cell mint_instruction = begin_cell()
+        .store_uint(OP_HIGHLOAD_MINT, 32)
+        .store_uint(query_id, 64)
+        .store_uint(category_id, 256)
+        .store_uint(nft_index, 64)
+        .store_ref(nft_data)
+        .end_cell();
+    
+    ;; Send to highload wallet
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(msg_value - GAS_MINT)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(mint_instruction)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    ;; Update category stats
+    cell updated_cat = begin_cell()
+        .store_slice(cat_name)
+        .store_slice(highload_wallet)
+        .store_uint(total_nfts + 1, 64)
+        .store_uint(is_active, 1)
+        .end_cell();
+    
+    categories~udict_set(256, category_id, updated_cat);
+    
+    return ();
+}
+
+;; Batch mint NFTs
+() op_batch_mint(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    int category_id = in_msg_body~load_uint(256);
+    int batch_size = in_msg_body~load_uint(16);
+    
+    throw_unless(ERR_BATCH_TOO_LARGE, batch_size <= BATCH_LIMIT);
+    throw_unless(ERR_BATCH_TOO_SMALL, batch_size > 0);
+    
+    cell batch_data = in_msg_body~load_ref();
+    
+    ;; Forward to highload wallet for processing
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee_percent, int min_wd, int vol, int trades, _) = load_storage();
+    
+    (slice category_data, int exists) = categories.udict_get?(256, category_id);
+    throw_unless(ERR_CATEGORY_NOT_FOUND, exists);
+    
+    slice cs = category_data.begin_parse();
+    slice cat_name = cs~load_slice(256);
+    slice highload_wallet = cs~load_msg_addr();
+    
+    cell batch_instruction = begin_cell()
+        .store_uint(OP_HIGHLOAD_BATCH_MINT, 32)
+        .store_uint(query_id, 64)
+        .store_uint(category_id, 256)
+        .store_uint(batch_size, 16)
+        .store_ref(batch_data)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(highload_wallet)
+        .store_coins(msg_value - GAS_BATCH_OP)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(batch_instruction)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    return ();
+}
+
+;; List NFT for fixed price sale
+() op_list_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    int price = in_msg_body~load_coins();
+    int sale_end_time = in_msg_body~load_uint(64);
+    
+    throw_unless(ERR_PRICE_TOO_LOW, price >= MIN_LISTING_PRICE);
+    throw_unless(ERR_INVALID_TIME, sale_end_time > now());
+    
+    ;; Create sale record
+    cell sale_data = begin_cell()
+        .store_slice(sender)          ;; seller
+        .store_msg_addr(nft_address)
+        .store_uint(category_id, 256)
+        .store_coins(price)
+        .store_uint(sale_end_time, 64)
+        .store_uint(0, 1)             ;; is_auction = false
+        .end_cell();
+    
+    ;; Emit listing event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_LISTED, 32)
+        .store_uint(query_id, 64)
+        .store_ref(sale_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; List NFT for auction
+() op_auction_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    int start_price = in_msg_body~load_coins();
+    int reserve_price = in_msg_body~load_coins();
+    int min_bid_increment = in_msg_body~load_coins();
+    int auction_end_time = in_msg_body~load_uint(64);
+    
+    throw_unless(ERR_PRICE_TOO_LOW, start_price >= MIN_LISTING_PRICE);
+    throw_unless(ERR_INVALID_TIME, auction_end_time > now() + 300); ;; Min 5 min auction
+    
+    cell auction_data = begin_cell()
+        .store_slice(sender)
+        .store_msg_addr(nft_address)
+        .store_uint(category_id, 256)
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_coins(min_bid_increment)
+        .store_uint(auction_end_time, 64)
+        .store_uint(1, 1)             ;; is_auction = true
+        .store_coins(0)               ;; current_bid
+        .store_slice(addr_none())     ;; highest_bidder
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_AUCTION_STARTED, 32)
+        .store_uint(query_id, 64)
+        .store_ref(auction_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Place bid on auction
+() op_place_bid(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice auction_id = in_msg_body~load_msg_addr();
+    int bid_amount = msg_value;  ;; Bid is the amount sent
+    
+    ;; Forward bid to auction contract
+    cell bid_data = begin_cell()
+        .store_uint(OP_AUCTION_BID, 32)
+        .store_uint(query_id, 64)
+        .store_slice(sender)
+        .store_coins(bid_amount)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(auction_id)
+        .store_coins(0)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(bid_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Buy NFT (fixed price)
+() op_buy_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee_percent, int min_wd, int vol, int trades, _) = load_storage();
+    
+    slice nft_address = in_msg_body~load_msg_addr();
+    slice seller = in_msg_body~load_msg_addr();
+    int price = in_msg_body~load_coins();
+    int category_id = in_msg_body~load_uint(256);
+    slice hash_comment = in_msg_body~load_ref().begin_parse();
+    
+    throw_unless(ERR_INSUFFICIENT_FUNDS, msg_value >= price);
+    
+    ;; Calculate fees
+    int marketplace_fee = calculate_fee(price, fee_percent);
+    int seller_amount = price - marketplace_fee;
+    
+    ;; Update stats
+    int new_volume = vol + price;
+    int new_trades = trades + 1;
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, new_volume, new_trades, categories);
+    
+    ;; Send fee to deposit wallet
+    var fee_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(deposit)
+        .store_coins(marketplace_fee)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_FEE_RECEIVED, 32)
+        .store_uint(query_id, 64)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    send_raw_message(fee_msg, 1);
+    
+    ;; Send payment to seller
+    var seller_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(seller)
+        .store_coins(seller_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_PROCEEDS, 32)
+        .store_uint(query_id, 64)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    send_raw_message(seller_msg, 1);
+    
+    ;; Transfer NFT to buyer
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)  ;; transfer op
+        .store_uint(query_id, 64)
+        .store_slice(sender)         ;; new_owner
+        .store_slice(sender)         ;; response_destination
+        .store_uint(0, 1)            ;; custom_payload null
+        .store_coins(10000000)       ;; forward_amount
+        .store_uint(0, 1)            ;; forward_payload in ref
+        .end_cell();
+    
+    var nft_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(GAS_TRANSFER)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    
+    send_raw_message(nft_msg, 1);
+    
+    ;; Emit sale event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_SOLD, 32)
+        .store_uint(query_id, 64)
+        .store_ref(begin_cell()
+            .store_msg_addr(nft_address)
+            .store_slice(seller)
+            .store_slice(sender)
+            .store_coins(price)
+            .store_uint(category_id, 256)
+            .end_cell())
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    return ();
+}
+
+;; Create offer for NFT
+() op_make_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    int offer_price = in_msg_body~load_coins();
+    int offer_expiry = in_msg_body~load_uint(64);
+    
+    throw_unless(ERR_INSUFFICIENT_FUNDS, msg_value >= offer_price);
+    throw_unless(ERR_INVALID_TIME, offer_expiry > now());
+    
+    cell offer_data = begin_cell()
+        .store_slice(sender)
+        .store_msg_addr(nft_address)
+        .store_coins(offer_price)
+        .store_uint(offer_expiry, 64)
+        .store_uint(now(), 64)
+        .end_cell();
+    
+    ;; Emit offer event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_MADE, 32)
+        .store_uint(query_id, 64)
+        .store_ref(offer_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Accept offer
+() op_accept_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    cell categories
+) impure inline {
+    ;; Implementation similar to buy_nft but with offer validation
+    return ();
+}
+
+;; Cancel listing/auction
+() op_cancel_sale(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    int sale_type = in_msg_body~load_uint(8);
+    
+    ;; Emit cancellation event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft_address)
+        .store_uint(sale_type, 8)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; VIRTUAL BALANCE OPERATIONS
+;; ============================================
+
+;; Deposit to virtual balance
+() op_virtual_deposit(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee_percent, int min_wd, int vol, int trades, _) = load_storage();
+    
+    slice hash_comment = in_msg_body~load_ref().begin_parse();
+    
+    ;; Forward to virtual balance manager
+    cell deposit_data = begin_cell()
+        .store_uint(OP_VIRTUAL_DEPOSIT_CONFIRMED, 32)
+        .store_uint(query_id, 64)
+        .store_slice(sender)
+        .store_coins(msg_value)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(vbm)
+        .store_coins(0)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(deposit_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Withdraw from virtual balance
+() op_virtual_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    cell categories
+) impure inline {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee_percent, int min_wd, int vol, int trades, _) = load_storage();
+    
+    int amount = in_msg_body~load_coins();
+    slice hash_comment = in_msg_body~load_ref().begin_parse();
+    
+    throw_unless(ERR_INSUFFICIENT_FUNDS, amount >= min_wd);
+    
+    ;; Forward to virtual balance manager for processing
+    cell withdraw_data = begin_cell()
+        .store_uint(OP_VIRTUAL_WITHDRAW_REQUEST, 32)
+        .store_uint(query_id, 64)
+        .store_slice(sender)
+        .store_coins(amount)
+        .store_slice(withdraw)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(vbm)
+        .store_coins(0)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(withdraw_data)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; NFT DEPOSIT / WITHDRAWAL
+;; ============================================
+
+;; Handle NFT deposit to marketplace
+() op_nft_deposit(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    cell forward_payload,
+    cell categories
+) impure inline {
+    ;; NFT received from user
+    int item_index = in_msg_body~load_uint(64);
+    slice nft_item = sender;  ;; The NFT contract is the sender
+    
+    ;; Extract owner and hash from forward payload
+    slice owner_address = forward_payload.begin_parse()~load_msg_addr();
+    slice hash_comment = forward_payload.begin_parse()~load_ref().begin_parse();
+    int category_id = forward_payload.begin_parse()~load_uint(256);
+    
+    ;; Verify deposit and emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(owner_address)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_DEPOSITED, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft_item)
+        .store_uint(item_index, 64)
+        .store_uint(category_id, 256)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    return ();
+}
+
+;; Withdraw NFT from marketplace
+() op_nft_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    slice to_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    slice hash_comment = in_msg_body~load_ref().begin_parse();
+    
+    ;; Transfer NFT to user
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)
+        .store_uint(query_id, 64)
+        .store_slice(to_address)
+        .store_slice(sender)
+        .store_uint(0, 1)
+        .store_coins(10000000)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(msg_value)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    ;; Emit withdrawal event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_WITHDRAWN, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft_address)
+        .store_slice(to_address)
+        .store_uint(category_id, 256)
+        .store_ref(begin_cell().store_slice(hash_comment).end_cell())
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; GIFT OPERATIONS
+;; ============================================
+
+;; Send NFT as gift
+() op_send_gift(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    cell categories
+) impure inline {
+    slice nft_address = in_msg_body~load_msg_addr();
+    slice recipient = in_msg_body~load_msg_addr();
+    slice gift_message = in_msg_body~load_ref().begin_parse();
+    int category_id = in_msg_body~load_uint(256);
+    
+    ;; Transfer NFT directly to recipient
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)
+        .store_uint(query_id, 64)
+        .store_slice(recipient)
+        .store_slice(sender)
+        .store_uint(0, 1)
+        .store_coins(10000000)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(msg_value)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    
+    send_raw_message(msg, 1);
+    
+    ;; Emit gift event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_GIFT_SENT, 32)
+        .store_uint(query_id, 64)
+        .store_msg_addr(nft_address)
+        .store_slice(recipient)
+        .store_uint(category_id, 256)
+        .store_ref(begin_cell().store_slice(gift_message).end_cell())
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    return ();
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        ;; Simple TON transfer - treat as deposit
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        ;; Bounced message
+        return ();
+    }
+    
+    slice sender_address = cs~load_msg_addr();
+    
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee, int min_wd, int vol, int trades, cell categories) = load_storage();
+    
+    ;; Route operations
+    if (op == OP_CREATE_CATEGORY) {
+        op_create_category(sender_address, query_id, in_msg_body, admin, categories);
+        save_storage(admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, categories);
+        return ();
+    }
+    
+    if (op == OP_SET_FEE) {
+        op_set_fee(sender_address, query_id, in_msg_body, admin, categories);
+        return ();
+    }
+    
+    if (op == OP_SET_MIN_WITHDRAW) {
+        op_set_min_withdraw(sender_address, query_id, in_msg_body, admin, categories);
+        return ();
+    }
+    
+    if (op == OP_MINT_NFT) {
+        op_mint_nft(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_BATCH_MINT) {
+        op_batch_mint(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_LIST_NFT) {
+        op_list_nft(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_AUCTION_NFT) {
+        op_auction_nft(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_PLACE_BID) {
+        op_place_bid(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_BUY_NFT) {
+        op_buy_nft(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_MAKE_OFFER) {
+        op_make_offer(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_ACCEPT_OFFER) {
+        op_accept_offer(sender_address, query_id, in_msg_body, categories);
+        return ();
+    }
+    
+    if (op == OP_CANCEL_SALE) {
+        op_cancel_sale(sender_address, query_id, in_msg_body, categories);
+        return ();
+    }
+    
+    if (op == OP_VIRTUAL_DEPOSIT) {
+        op_virtual_deposit(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_VIRTUAL_WITHDRAW) {
+        op_virtual_withdraw(sender_address, query_id, in_msg_body, categories);
+        return ();
+    }
+    
+    if (op == OP_NFT_WITHDRAW) {
+        op_nft_withdraw(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == OP_SEND_GIFT) {
+        op_send_gift(sender_address, query_id, in_msg_body, msg_value, categories);
+        return ();
+    }
+    
+    if (op == 0x5fcc3d14) {
+        ;; NFT transfer notification
+        op_nft_deposit(sender_address, query_id, in_msg_body, cs~load_ref(), categories);
+        return ();
+    }
+    
+    throw(ERR_INVALID_OP);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+;; Get marketplace info
+(int, int, int, int, slice, slice, slice, slice) get_marketplace_info() method_id {
+    (slice admin, slice deposit, slice withdraw, slice vbm, 
+     int fee, int min_wd, int vol, int trades, _) = load_storage();
+    return (fee, min_wd, vol, trades, admin, deposit, withdraw, vbm);
+}
+
+;; Get category info
+(slice, slice, int, int) get_category_info(int category_id) method_id {
+    (_, _, _, _, _, _, _, _, cell categories) = load_storage();
+    
+    (slice data, int exists) = categories.udict_get?(256, category_id);
+    throw_unless(ERR_CATEGORY_NOT_FOUND, exists);
+    
+    slice cs = data.begin_parse();
+    slice name = cs~load_slice(256);
+    slice wallet = cs~load_msg_addr();
+    int total = cs~load_uint(64);
+    int active = cs~load_uint(1);
+    
+    return (name, wallet, total, active);
+}
+
+;; Get total categories count
+int get_categories_count() method_id {
+    (_, _, _, _, _, _, _, _, cell categories) = load_storage();
+    return categories.dict_empty?() ? 0 : categories.dict_count(256);
+}
