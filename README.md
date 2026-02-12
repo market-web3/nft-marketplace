@@ -1,40 +1,52 @@
-# NFT Marketplace on TON Blockchain
+# TON NFT Marketplace - Complete System
 
-A production-ready, high-load NFT marketplace built on The Open Network (TON) blockchain.
+A production-ready, full-featured NFT marketplace built on The Open Network (TON) blockchain with enhanced auction system, offer management, and Telegram integration.
 
 ## 🚀 Features
 
 ### Smart Contracts (FunC)
-- **Main Marketplace Contract**: Handles all NFT operations
-- **Highload Wallet Integration**: Dedicated wallets per NFT category for scalability
-- **Virtual Balance Manager**: Off-chain balance system for fee optimization
-- **NFT Item Contract**: TEP-62 compliant NFT implementation
-- **Auction Contract**: Time-based bidding system
+- **Main Marketplace Contract V3** (`nft_marketplace_v3.fc`)
+  - Admin wallet direct approval - no admin panel dependency in contract
+  - **Enhanced Auction System**: Configurable duration (7 days to 1 year)
+  - **Enhanced Offer System**: Time-limited offers (1 hour to 30 days)
+  - Automatic TON handling for offers (lock, release on accept/reject/expiry)
+  - Automatic offer cancellation on expiry
+  - Fixed price listings
+  - NFT deposit/withdrawal
+  - Virtual balance support
 
 ### Backend (Node.js/TypeScript)
-- **Microservices Architecture**: Scalable service-oriented design
-- **High-Load Support**: Handles 1000+ concurrent users
-- **Real-time Updates**: WebSocket gateway for live data
-- **Security**: Anti double-spend, replay protection, hash validation
-- **Caching**: Redis for performance optimization
-- **Queue System**: RabbitMQ for background jobs
+- Microservices architecture
+- Real-time updates via WebSocket
+- Redis caching
+- PostgreSQL database
+- Anti double-spend protection
+- Rate limiting
 
 ### Frontend (Next.js/React)
-- **Responsive Design**: Mobile, tablet, desktop optimized
 - **Wallet Integration**: TonConnect support
-- **Real-time Updates**: Live price feeds, auction countdowns
-- **Virtual Balance**: On-chain/off-chain balance management
+- **Home Page**: Animated hero, stats, categories, featured NFTs, trending auctions
+- **Market Page**: Search, filters, sorting, grid/list view
+- **Inventory Page**: NFTs, deposited items, Telegram gifts
+- **Profile Page**: Stats, created/owned NFTs, activity history
+- **Responsive Design**: Mobile, tablet, desktop optimized
+- **Dark Mode**: Full dark mode support
 
-### Admin Panel
-- **Category Management**: Create NFT categories with highload wallets
-- **User Management**: Ban/unban, view statistics
-- **Transaction Monitoring**: Real-time tracking
-- **Wallet Monitoring**: Deposit/withdraw wallet tracking
+### Admin Panel (React + Vite)
+- **Dashboard**: Statistics, charts, recent activity
+- **NFT Management**: Approve/reject NFTs, view all listings
+- **Auction Management**: Create, start, end auctions
+- **Offers Management**: Monitor and manage offers
+- **Telegram Gifts**: Sync with Telegram, manage withdrawals
+- **User Management**: View, ban/unban users
+- **Settings**: Configure marketplace, wallets, Telegram
 
-### Telegram Bot
-- **Instant Notifications**: Sales, offers, auction updates
-- **Authentication**: Link Telegram to platform
-- **Off-chain Gifts**: Telegram gift system integration
+### Telegram Bot (Node.js)
+- **Gift Management**: Deposit and withdraw Telegram gifts
+- **User Linking**: Link Telegram to website account
+- **Inventory**: View NFTs via bot
+- **Withdrawal Requests**: Handle gift withdrawal to Telegram
+- **Notifications**: Real-time notifications for sales, auctions, offers
 
 ## 📁 Project Structure
 
@@ -42,31 +54,31 @@ A production-ready, high-load NFT marketplace built on The Open Network (TON) bl
 nft-marketplace/
 ├── smart-contracts/          # TON FunC contracts
 │   ├── contracts/
-│   │   ├── nft_marketplace.fc
-│   │   ├── nft_item.fc
-│   │   ├── virtual_balance_manager.fc
-│   │   ├── auction.fc
-│   │   ├── highload_adapter.fc
-│   │   └── ...
-│   └── wrappers/            # Contract wrappers
-├── backend/                 # Node.js microservices
-│   ├── src/
-│   │   ├── api/            # REST API
-│   │   ├── gateway/        # WebSocket gateway
-│   │   ├── services/       # Business logic
-│   │   ├── workers/        # Background jobs
-│   │   └── shared/         # Utils, models
-│   └── Dockerfile
-├── frontend/               # Next.js web app
-│   ├── src/
-│   │   ├── app/           # App router
-│   │   ├── components/    # React components
-│   │   ├── hooks/         # Custom hooks
-│   │   └── store/         # State management
-│   └── Dockerfile
-├── admin-panel/           # React admin dashboard
-├── telegram-bot/          # Telegram bot
-└── docker/               # Docker compose configs
+│   │   ├── nft_marketplace_v3.fc    # Main contract (enhanced)
+│   │   ├── auction.fc               # Auction contract
+│   │   ├── op_codes.fc              # Operation codes
+│   │   ├── errors.fc                # Error codes
+│   │   └── utils.fc                 # Utility functions
+│   └── wrappers/                   # Contract wrappers
+├── backend/                       # Node.js microservices
+│   └── src/
+├── frontend/                      # Next.js web app
+│   └── src/
+│       ├── app/                  # Next.js app router
+│       ├── components/
+│       │   ├── home/            # Home page components
+│       │   ├── layout/          # Layout components
+│       │   ├── common/          # Shared components
+│       │   └── providers/       # Context providers
+│       └── store/               # Zustand store
+├── admin-panel/                   # React admin dashboard
+│   └── src/
+│       ├── components/
+│       └── pages/
+├── telegram-bot/                  # Telegram bot
+│   └── src/
+│       └── services/
+└── docker/                       # Docker configurations
 ```
 
 ## 🔧 Installation
@@ -75,10 +87,9 @@ nft-marketplace/
 - Node.js 20+
 - PostgreSQL 15+
 - Redis 7+
-- RabbitMQ 3+
-- Docker & Docker Compose
+- Docker & Docker Compose (optional)
 
-### Quick Start (Docker)
+### Quick Start
 
 ```bash
 # Clone repository
@@ -91,30 +102,33 @@ cp .env.example .env
 # Edit .env with your configuration
 nano .env
 
-# Start all services
-cd docker
-docker-compose up -d
+# Install dependencies and start all services
+cd frontend && npm install && npm run dev
+cd ../admin-panel && npm install && npm run dev
+cd ../telegram-bot && npm install && npm run dev
+cd ../backend && npm install && npm run dev
 ```
 
-### Manual Setup
+### Smart Contract Deployment
 
 ```bash
-# Backend
-cd backend
-npm install
-cp .env.example .env
-npm run db:migrate
-npm run dev
+cd smart-contracts
 
-# Frontend
-cd frontend
-npm install
-npm run dev
+# Compile contracts
+npm run build
+
+# Deploy main contract
+npm run deploy:marketplace
+
+# Create NFT category
+npm run create-category --name="Art Collection"
 ```
 
 ## ⚙️ Configuration
 
 ### Environment Variables
+
+Key variables in `.env`:
 
 ```env
 # Database
@@ -127,34 +141,65 @@ REDIS_URL=redis://localhost:6379
 TON_API_KEY=your_toncenter_api_key
 TON_NETWORK=testnet
 TON_CONTRACT_ADDRESS=EQ...
+TON_ADMIN_WALLET_MNEMONIC=word1 word2 ... word24
 
 # Security
 JWT_SECRET=your_jwt_secret
-JWT_REFRESH_SECRET=your_refresh_secret
 
 # Telegram
 TELEGRAM_BOT_TOKEN=your_bot_token
 ```
 
-## 📊 Smart Contract Deployment
+## 📝 Smart Contract Features
 
-### Compile Contracts
-```bash
-cd smart-contracts
-func -o build/nft_marketplace.fif contracts/nft_marketplace.fc
-```
+### Auction System
+- **Minimum Duration**: 7 days
+- **Maximum Duration**: 365 days (1 year)
+- **Bid Refunds**: Automatic refund of previous highest bidder
+- **Reserve Price**: Seller can set minimum acceptable price
+- **Fee Distribution**: Automatic fee calculation and distribution
 
-### Deploy Main Contract
-```bash
-npm run deploy:marketplace
-```
+### Offer System
+- **Duration**: 1 hour to 30 days (user configurable)
+- **TON Locking**: Offer amount locked in contract
+- **Auto-expiry**: Expired offers automatically return TON to buyer
+- **Accept/Reject**: Seller can accept (distributes TON) or reject (returns TON)
 
-### Create NFT Category with Highload Wallet
-```bash
-npm run create-category --name="Art Collection"
-```
+### Admin Operations
+All admin operations are performed directly from the admin wallet:
+- Create categories
+- Set marketplace fee
+- Pause/resume marketplace
+- Emergency withdraw
 
-## 🎮 API Endpoints
+No admin panel functionality exists in the contract - it's all wallet-based for security.
+
+## 🎨 Frontend Features
+
+### Animations
+- Smooth page transitions
+- Hover effects on NFT cards
+- Floating elements in hero section
+- Loading skeletons
+- Countdown timers for auctions
+
+### Responsive Design
+- Mobile-first approach
+- Breakpoints: sm (640px), md (768px), lg (1024px), xl (1280px)
+- Adaptive navigation (mobile menu)
+- Responsive grid layouts
+
+## 🤖 Telegram Bot Commands
+
+- `/start` - Start the bot
+- `/help` - Show help
+- `/inventory` - View your NFTs
+- `/deposit` - Deposit a gift
+- `/withdraw` - Withdraw a gift
+- `/link` - Link website account
+- `/balance` - Check balance
+
+## 📊 API Endpoints
 
 ### Authentication
 - `POST /api/auth/nonce` - Generate auth nonce
@@ -166,28 +211,32 @@ npm run create-category --name="Art Collection"
 - `GET /api/nfts/:id` - Get NFT details
 - `POST /api/nfts/deposit` - Deposit NFT
 - `POST /api/nfts/withdraw` - Withdraw NFT
-- `POST /api/nfts/gift` - Send as gift
 
-### Listings
-- `GET /api/listings` - Active listings
-- `POST /api/listings/fixed` - Create fixed price listing
-- `POST /api/listings/auction` - Create auction
-- `POST /api/listings/:id/buy` - Buy NFT
-- `POST /api/listings/:id/bid` - Place bid
+### Auctions
+- `GET /api/auctions` - List active auctions
+- `POST /api/auctions` - Create auction
+- `POST /api/auctions/:id/bid` - Place bid
+- `POST /api/auctions/:id/end` - End auction
+
+### Offers
+- `GET /api/offers` - List offers
+- `POST /api/offers` - Make offer
+- `POST /api/offers/:id/accept` - Accept offer
+- `POST /api/offers/:id/reject` - Reject offer
 
 ## 🔐 Security Features
 
-- **Anti Double-Spend**: Transaction tracking with hash validation
-- **Replay Protection**: Nonce-based request validation
-- **Rate Limiting**: Per-user and global rate limits
-- **Hash Comments**: Secure deposit/withdrawal verification
-- **Virtual Balance**: Off-chain accounting with on-chain settlement
+- **Anti Double-Spend**: Transaction tracking
+- **Replay Protection**: Nonce-based validation
+- **Rate Limiting**: Per-user and global limits
+- **Hash Comments**: Secure deposit verification
+- **Wallet Verification**: Signature-based auth
 
 ## 📈 Performance
 
 - **Caching**: Redis for frequently accessed data
-- **CDN**: Image optimization and delivery
-- **Database**: Connection pooling, read replicas
+- **CDN**: Image optimization
+- **Database**: Connection pooling
 - **Queue System**: Background job processing
 - **Load Balancing**: Multiple API instances
 
@@ -227,4 +276,8 @@ MIT License - see [LICENSE](LICENSE) file
 
 - [TON Blockchain](https://ton.org)
 - [TonConnect](https://github.com/ton-connect)
-- [Highload Wallet V3](https://github.com/ton-blockchain/highload-wallet-contract-v3)
+- [Telegraf](https://telegraf.js.org/)
+
+---
+
+Built with ❤️ for the TON ecosystem

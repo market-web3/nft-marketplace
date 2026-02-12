@@ -2,294 +2,109 @@
 ;; UTILITY FUNCTIONS
 ;; ============================================
 
-;; Check if two addresses are equal
-int equal_slices(slice a, slice b) inline {
-    return a.slice_hash() == b.slice_hash();
-}
-
-;; Get current timestamp
-int now() asm "NOW";
-
-;; Get contract balance
-int my_balance() asm "BALANCE";
-
-;; Get contract address
-slice my_address() asm "MYADDR";
-
-;; Throw if condition is false
-() throw_unless(int condition, int exit_code) impure {
-    if (~ condition) {
-        throw(exit_code);
-    }
-}
-
-;; Throw if condition is true
-() throw_if(int condition, int exit_code) impure {
-    if (condition) {
-        throw(exit_code);
-    }
-}
-
-;; Load coins from slice
-int load_coins(slice s) asm(-> 1 0) "LDVARUINT16";
-
-;; Store coins to builder
-builder store_coins(builder b, int x) asm "STVARUINT16";
-
 ;; Slice hash
-int slice_hash(slice s) asm "HASHSU";
+int slice_hash(slice s) inline {
+    return slice_hash(s);
+}
 
-;; Check if slice is empty
-int slice_empty?(slice s) asm "SEMPTY";
+;; Address none
+slice addr_none() inline {
+    return begin_cell().store_uint(0, 2).end_cell().begin_parse();
+}
 
-;; Check if slice is not empty
-int slice_not_empty?(slice s) asm "SREMAINING";
+;; Calculate cell hash
+int cell_hash(cell c) inline {
+    return cell_hash(c);
+}
 
-;; Get remaining bits in slice
-int slice_bits(slice s) asm "SBITS";
+;; Check if slice is valid address
+int is_valid_address(slice s) inline {
+    return s.slice_bits() == 267;
+}
 
-;; Get remaining refs in slice
-int slice_refs(slice s) asm "SREFS";
+;; Parse address from slice
+(slice, slice) parse_address(slice s) inline {
+    return s~load_msg_addr();
+}
 
-;; Check if builder is empty
-int builder_empty?(builder b) asm "BREFS" "ISZERO";
+;; Build address
+cell build_address(int workchain, int hash) inline {
+    return begin_cell()
+        .store_uint(2, 2)  ;; addr_std$10
+        .store_uint(0, 1) ;; anycast absent
+        .store_int(workchain, 8)
+        .store_uint(hash, 256)
+        .end_cell();
+}
 
-;; Minimum of two integers
-int min(int a, int b) {
+;; Serialize uint256 to cell
+cell serialize_uint256(int value) inline {
+    return begin_cell().store_uint(value, 256).end_cell();
+}
+
+;; Deserialize uint256 from cell
+int deserialize_uint256(cell c) inline {
+    return c.begin_parse()~load_uint(256);
+}
+
+;; ============================================
+;; TIME UTILITIES
+;; ============================================
+
+;; Get current time
+int get_now() inline {
+    return now();
+}
+
+;; Check if expired
+int is_expired(int expiry_time) inline {
+    return now() >= expiry_time;
+}
+
+;; Calculate days to seconds
+int days_to_seconds(int days) inline {
+    return days * 86400;
+}
+
+;; Calculate hours to seconds
+int hours_to_seconds(int hours) inline {
+    return hours * 3600;
+}
+
+;; ============================================
+;; MATH UTILITIES
+;; ============================================
+
+;; Min of two values
+int min(int a, int b) inline {
     return a < b ? a : b;
 }
 
-;; Maximum of two integers
-int max(int a, int b) {
+;; Max of two values
+int max(int a, int b) inline {
     return a > b ? a : b;
 }
 
-;; Absolute value
-int abs(int x) {
-    return x < 0 ? -x : x;
-}
-
-;; String comparison (for slices)
-int equal_slices_bits(slice a, slice b) {
-    return equal_slices(a, b);
-}
-
-;; Check if address is valid
-int is_valid_address(slice addr) inline {
-    return addr.slice_bits() == 267;
-}
-
-;; Load msg address with validation
-slice load_msg_addr_safe(slice s) inline {
-    var (addr, remainder) = s.load_msg_addr();
-    throw_unless(ERR_INVALID_ADDRESS, is_valid_address(addr));
-    return addr;
-}
-
-;; Generate unique ID from multiple parameters
-int generate_id(slice addr, int timestamp, int nonce) inline {
-    cell data = begin_cell()
-        .store_slice(addr)
-        .store_uint(timestamp, 64)
-        .store_uint(nonce, 64)
-        .end_cell();
-    return data.cell_hash();
-}
-
-;; Convert TON to nanotons
-int ton_to_nanoton(float ton) inline {
-    return ton * 1000000000;
-}
-
-;; Convert nanotons to TON
-float nanoton_to_ton(int nanoton) inline {
-    return nanoton / 1000000000.0;
+;; Clamp value between min and max
+int clamp(int value, int min_val, int max_val) inline {
+    return max(min_val, min(value, max_val));
 }
 
 ;; Calculate percentage
-int calculate_percentage(int amount, int percent) inline {
-    return (amount * percent) / 10000;  ;; Basis points
+int calculate_percentage(int amount, int percent, int precision) inline {
+    return (amount * percent) / precision;
 }
 
-;; Validate timestamp is in valid range
-() validate_timestamp(int timestamp) inline {
-    int current = now();
-    throw_unless(ERR_INVALID_TIME, timestamp >= current - 86400);  ;; Max 1 day in past
-    throw_unless(ERR_INVALID_TIME, timestamp <= current + 31536000);  ;; Max 1 year in future
-}
-
-;; Check if timestamp has expired
-int is_expired(int timestamp) inline {
-    return now() > timestamp;
-}
-
-;; Add with overflow check
-int safe_add(int a, int b) inline {
+;; Safe add with overflow check
+(int, int) safe_add(int a, int b) inline {
     int result = a + b;
-    throw_if(ERR_CELL_OVERFLOW, result < a);
-    return result;
+    int overflow = result < a;
+    return (result, overflow);
 }
 
-;; Multiply with overflow check
-int safe_mul(int a, int b) inline {
-    if (a == 0 || b == 0) {
-        return 0;
-    }
-    int result = a * b;
-    throw_if(ERR_CELL_OVERFLOW, result / a != b);
-    return result;
-}
-
-;; Serialize address to string representation
-slice addr_to_string(slice addr) inline {
-    return addr;
-}
-
-;; Parse address from string
-slice string_to_addr(slice str) inline {
-    ;; Implementation would depend on specific format
-    return str;
-}
-
-;; Generate hash comment for deposits
-int generate_hash_comment(slice user_addr, int timestamp, int amount) inline {
-    cell data = begin_cell()
-        .store_slice(user_addr)
-        .store_uint(timestamp, 64)
-        .store_coins(amount)
-        .end_cell();
-    return data.cell_hash();
-}
-
-;; Verify hash comment
-int verify_hash_comment(slice user_addr, int timestamp, int amount, int expected_hash) inline {
-    int computed = generate_hash_comment(user_addr, timestamp, amount);
-    return computed == expected_hash;
-}
-
-;; Pack NFT metadata
-cell pack_nft_metadata(
-    slice name,
-    slice description,
-    slice image_url,
-    slice external_url,
-    cell attributes
-) inline {
-    return begin_cell()
-        .store_slice(name)
-        .store_slice(description)
-        .store_slice(image_url)
-        .store_slice(external_url)
-        .store_ref(attributes)
-        .end_cell();
-}
-
-;; Unpack NFT metadata
-(slice, slice, slice, slice, cell) unpack_nft_metadata(cell metadata) inline {
-    slice cs = metadata.begin_parse();
-    return (
-        cs~load_slice(256),
-        cs~load_slice(512),
-        cs~load_slice(512),
-        cs~load_slice(512),
-        cs~load_ref()
-    );
-}
-
-;; Calculate royalty amount
-int calculate_royalty(int sale_price, int royalty_percent) inline {
-    return calculate_percentage(sale_price, royalty_percent);
-}
-
-;; Validate royalty percent
-() validate_royalty(int royalty_percent) inline {
-    throw_unless(ERR_INVALID_ROYALTY, royalty_percent >= 0);
-    throw_unless(ERR_INVALID_ROYALTY, royalty_percent <= 5000);  ;; Max 50%
-}
-
-;; Check if amount is valid for withdrawal
-() validate_withdraw_amount(int amount, int min_amount) inline {
-    throw_unless(ERR_INVALID_AMOUNT, amount > 0);
-    throw_unless(ERR_INSUFFICIENT_FUNDS, amount >= min_amount);
-}
-
-;; Encode batch operation
-cell encode_batch_operation(int op_type, cell data) inline {
-    return begin_cell()
-        .store_uint(op_type, 16)
-        .store_ref(data)
-        .end_cell();
-}
-
-;; Decode batch operation
-(int, cell) decode_batch_operation(cell encoded) inline {
-    slice cs = encoded.begin_parse();
-    return (cs~load_uint(16), cs~load_ref());
-}
-
-;; Batch processor - execute multiple operations
-() process_batch(cell operations, int count) impure inline {
-    throw_unless(ERR_BATCH_TOO_LARGE, count <= 100);
-    throw_unless(ERR_BATCH_TOO_SMALL, count > 0);
-    
-    int i = 0;
-    while (i < count) {
-        (slice op_data, int found) = operations.udict_get?(256, i);
-        if (found) {
-            ;; Process operation
-            ;; Actual processing depends on operation type
-        }
-        i = i + 1;
-    }
-}
-
-;; Rate limiter check
-int check_rate_limit(slice user, int action_type, cell limits) inline {
-    ;; Implementation would track last action time and count
-    return 1;  ;; Allow by default
-}
-
-;; Update rate limit
-() update_rate_limit(slice user, int action_type, cell limits) impure inline {
-    ;; Update last action timestamp and count
-    return ();
-}
-
-;; Anti-replay nonce validation
-() validate_nonce(slice user, int nonce, cell used_nonces) inline {
-    ;; Check if nonce was already used
-    (slice data, int found) = used_nonces.udict_get?(256, nonce);
-    throw_if(ERR_REPLAY_ATTACK, found);
-}
-
-;; Mark nonce as used
-() mark_nonce_used(slice user, int nonce, cell used_nonces) impure inline {
-    used_nonces~udict_set(256, nonce, begin_cell().store_slice(user).end_cell());
-}
-
-;; Double-spend prevention
-() check_double_spend(int tx_hash, cell processed_txs) inline {
-    (slice data, int found) = processed_txs.udict_get?(256, tx_hash);
-    throw_if(ERR_DOUBLE_SPEND, found);
-}
-
-;; Mark transaction as processed
-() mark_tx_processed(int tx_hash, cell processed_txs, int timestamp) impure inline {
-    processed_txs~udict_set(256, tx_hash, begin_cell().store_uint(timestamp, 64).end_cell());
-}
-
-;; Clean old processed transactions (garbage collection)
-() cleanup_processed_txs(cell processed_txs, int max_age) impure inline {
-    int current_time = now();
-    ;; Iterate and remove entries older than max_age
-    ;; Implementation depends on specific requirements
-}
-
-;; Logging helper - emit event
-cell log_event(int event_type, int timestamp, cell data) inline {
-    return begin_cell()
-        .store_uint(event_type, 32)
-        .store_uint(timestamp, 64)
-        .store_ref(data)
-        .end_cell();
+;; Safe subtract with underflow check
+(int, int) safe_sub(int a, int b) inline {
+    int underflow = b > a;
+    int result = underflow ? 0 : a - b;
+    return (result, underflow);
 }
