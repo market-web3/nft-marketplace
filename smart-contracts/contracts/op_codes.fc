@@ -1,16 +1,19 @@
 ;; ============================================
-;; OPERATION CODES
+;; OPERATION CODES - V3 Enhanced
 ;; ============================================
 
-;; Admin Operations
+;; Admin Operations (0x1000-0x10FF)
 const int OP_CREATE_CATEGORY = 0x1001;
 const int OP_SET_FEE = 0x1002;
 const int OP_SET_MIN_WITHDRAW = 0x1003;
 const int OP_UPDATE_CATEGORY = 0x1004;
 const int OP_PAUSE_CATEGORY = 0x1005;
 const int OP_RESUME_CATEGORY = 0x1006;
+const int OP_PAUSE_MARKETPLACE = 0x1007;
+const int OP_RESUME_MARKETPLACE = 0x1008;
+const int OP_EMERGENCY_WITHDRAW = 0x1009;
 
-;; NFT Operations
+;; NFT Operations (0x2000-0x20FF)
 const int OP_MINT_NFT = 0x2001;
 const int OP_BATCH_MINT = 0x2002;
 const int OP_LIST_NFT = 0x2003;
@@ -19,11 +22,24 @@ const int OP_PLACE_BID = 0x2005;
 const int OP_BUY_NFT = 0x2006;
 const int OP_MAKE_OFFER = 0x2007;
 const int OP_ACCEPT_OFFER = 0x2008;
-const int OP_CANCEL_SALE = 0x2009;
-const int OP_TRANSFER_NFT = 0x200a;
-const int OP_UPDATE_LISTING = 0x200b;
+const int OP_REJECT_OFFER = 0x2009;
+const int OP_CANCEL_OFFER = 0x200A;
+const int OP_CANCEL_EXPIRED_OFFER = 0x200B;
+const int OP_TRANSFER_NFT = 0x200C;
+const int OP_UPDATE_LISTING = 0x200D;
+const int OP_CANCEL_LISTING = 0x200E;
 
-;; Virtual Balance Operations
+;; Enhanced Auction Operations (0x2100-0x21FF)
+const int OP_CREATE_AUCTION = 0x2101;
+const int OP_END_AUCTION = 0x2102;
+const int OP_EXTEND_AUCTION = 0x2103;
+const int OP_CANCEL_AUCTION = 0x2104;
+const int OP_BID_REFUNDED = 0x2105;
+
+;; Enhanced Offer Operations (0x2200-0x22FF)
+const int OP_OFFER_EXPIRED_AUTO = 0x2201;
+
+;; Virtual Balance Operations (0x3000-0x30FF)
 const int OP_VIRTUAL_DEPOSIT = 0x3001;
 const int OP_VIRTUAL_WITHDRAW = 0x3002;
 const int OP_VIRTUAL_TRANSFER = 0x3003;
@@ -31,13 +47,14 @@ const int OP_VIRTUAL_DEPOSIT_CONFIRMED = 0x3004;
 const int OP_VIRTUAL_WITHDRAW_REQUEST = 0x3005;
 const int OP_VIRTUAL_WITHDRAW_CONFIRMED = 0x3006;
 
-;; Wallet Operations
+;; Wallet Operations (0x4000-0x40FF)
 const int OP_DEPOSIT_TON = 0x4001;
 const int OP_WITHDRAW_TON = 0x4002;
 const int OP_FEE_RECEIVED = 0x4003;
 const int OP_SALE_PROCEEDS = 0x4004;
+const int OP_REFUND = 0x4005;
 
-;; Highload Wallet Operations
+;; Highload Wallet Operations (0x5000-0x50FF)
 const int OP_HIGHLOAD_MINT = 0x5001;
 const int OP_HIGHLOAD_BATCH_MINT = 0x5002;
 const int OP_HIGHLOAD_TRANSFER = 0x5003;
@@ -45,32 +62,37 @@ const int OP_HIGHLOAD_DEPOSIT = 0x5004;
 const int OP_HIGHLOAD_WITHDRAW = 0x5005;
 const int OP_HIGHLOAD_EXECUTE = 0x5006;
 
-;; Gift Operations
+;; Gift Operations (0x6000-0x60FF)
 const int OP_SEND_GIFT = 0x6001;
 const int OP_RECEIVE_GIFT = 0x6002;
+const int OP_GIFT_DEPOSIT = 0x6003;
+const int OP_GIFT_WITHDRAW = 0x6004;
 
-;; Deposit/Withdraw Operations
+;; Deposit/Withdraw Operations (0x7000-0x70FF)
 const int OP_NFT_DEPOSIT = 0x7001;
 const int OP_NFT_WITHDRAW = 0x7002;
 const int OP_TON_DEPOSIT = 0x7003;
 const int OP_TON_WITHDRAW = 0x7004;
 
-;; Event Operations (for off-chain indexing)
+;; Event Operations (0x8000-0x80FF)
 const int OP_CATEGORY_CREATED = 0x8001;
 const int OP_NFT_LISTED = 0x8002;
 const int OP_NFT_AUCTION_STARTED = 0x8003;
 const int OP_NFT_SOLD = 0x8004;
 const int OP_OFFER_MADE = 0x8005;
 const int OP_OFFER_ACCEPTED = 0x8006;
-const int OP_AUCTION_BID = 0x8007;
-const int OP_AUCTION_ENDED = 0x8008;
-const int OP_SALE_CANCELLED = 0x8009;
-const int OP_NFT_DEPOSITED = 0x800a;
-const int OP_NFT_WITHDRAWN = 0x800b;
-const int OP_GIFT_SENT = 0x800c;
-const int OP_GIFT_RECEIVED = 0x800d;
+const int OP_OFFER_REJECTED = 0x8007;
+const int OP_OFFER_CANCELLED = 0x8008;
+const int OP_AUCTION_BID = 0x8009;
+const int OP_AUCTION_ENDED = 0x800A;
+const int OP_SALE_CANCELLED = 0x800B;
+const int OP_NFT_DEPOSITED = 0x800C;
+const int OP_NFT_WITHDRAWN = 0x800D;
+const int OP_GIFT_SENT = 0x800E;
+const int OP_GIFT_RECEIVED = 0x800F;
+const int OP_LISTING_CANCELLED = 0x8010;
 
-;; Batch Operations
+;; Batch Operations (0x9000-0x90FF)
 const int OP_BATCH_EXECUTE = 0x9001;
 const int OP_BATCH_LIST = 0x9002;
 const int OP_BATCH_BUY = 0x9003;

@@ -1,0 +1,1458 @@
+;; ============================================
+;; NFT MARKETPLACE SMART CONTRACT - V3
+;; Production-ready with Enhanced Auction & Offer System
+;; Admin Wallet Direct Approval - No Admin Panel in Contract
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+
+;; ============================================
+;; CONSTANTS
+;; ============================================
+const int MAX_FEE_PERCENT = 1000;        ;; 10% max (in basis points)
+const int FEE_PRECISION = 10000;          ;; 0.01% precision
+const int MIN_LISTING_PRICE = 10000000;   ;; 0.01 TON minimum
+const int MIN_AUCTION_DAYS = 7;           ;; Minimum 7 days
+const int MAX_AUCTION_DAYS = 365;         ;; Maximum 1 year
+const int MIN_OFFER_HOURS = 1;            ;; Minimum 1 hour offer
+const int MAX_OFFER_DAYS = 30;            ;; Maximum 30 days offer
+const int DAY_IN_SECONDS = 86400;
+const int HOUR_IN_SECONDS = 3600;
+const int BATCH_LIMIT = 100;
+
+;; Gas constants
+const int GAS_MINT = 20000000;
+const int GAS_TRANSFER = 15000000;
+const int GAS_SALE = 25000000;
+const int GAS_OFFER = 20000000;
+const int GAS_BATCH_OP = 50000000;
+const int GAS_AUCTION_BID = 15000000;
+
+;; ============================================
+;; STORAGE LAYOUT V3
+;; ============================================
+;; storage#_ 
+;;   admin_address:MsgAddress
+;;   deposit_wallet:MsgAddress      ;; Receives marketplace fees
+;;   withdraw_wallet:MsgAddress     ;; Handles withdrawals
+;;   virtual_balance_manager:MsgAddress
+;;   marketplace_fee_percent:uint16
+;;   min_withdraw_amount:Coins
+;;   total_volume:Coins
+;;   total_trades:uint64
+;;   total_nfts:uint64
+;;   is_paused:Bool
+;;   nft_categories:(HashmapE 256 NftCategory)
+;;   active_listings:(HashmapE 256 Listing)
+;;   active_offers:(HashmapE 256 Offer)
+;;   auctions:(HashmapE 256 AuctionConfig)
+;;   = Storage;
+
+;; ============================================
+;; ENHANCED DATA STRUCTURES
+;; ============================================
+
+;; NftCategory:
+;;   category_name:Slice
+;;   highload_wallet:MsgAddress
+;;   total_nfts:uint64
+;;   is_active:Bool
+
+;; Listing:
+;;   nft_address:MsgAddress
+;;   seller:MsgAddress
+;;   price:Coins
+;;   category_id:uint256
+;;   created_at:uint64
+;;   expires_at:uint64
+;;   listing_type:uint8 (0=fixed, 1=auction)
+;;   auction_config:Cell (if auction)
+
+;; Offer:
+;;   offer_id:uint256
+;;   nft_address:MsgAddress
+;;   buyer:MsgAddress
+;;   seller:MsgAddress
+;;   amount:Coins
+;;   created_at:uint64
+;;   expires_at:uint64
+;;   status:uint8 (0=pending, 1=accepted, 2=rejected, 3=expired, 4=cancelled)
+
+;; AuctionConfig:
+;;   start_price:Coins
+;;   reserve_price:Coins
+;;   min_bid_increment:Coins
+;;   start_time:uint64
+;;   end_time:uint64
+;;   highest_bid:Coins
+;;   highest_bidder:MsgAddress
+;;   bid_count:uint32
+;;   is_active:Bool
+
+;; ============================================
+;; STORAGE FUNCTIONS
+;; ============================================
+
+(slice, slice, slice, slice, int, int, int, int, int, int, cell, cell, cell, cell) load_storage() inline {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),           ;; admin_address
+        ds~load_msg_addr(),           ;; deposit_wallet
+        ds~load_msg_addr(),           ;; withdraw_wallet
+        ds~load_msg_addr(),           ;; virtual_balance_manager
+        ds~load_uint(16),             ;; marketplace_fee_percent
+        ds~load_coins(),              ;; min_withdraw_amount
+        ds~load_coins(),              ;; total_volume
+        ds~load_uint(64),             ;; total_trades
+        ds~load_uint(64),             ;; total_nfts
+        ds~load_uint(1),              ;; is_paused
+        ds~load_dict(),               ;; nft_categories
+        ds~load_dict(),               ;; active_listings
+        ds~load_dict(),               ;; active_offers
+        ds~load_dict()                ;; auctions
+    );
+}
+
+() save_storage(
+    slice admin_address,
+    slice deposit_wallet,
+    slice withdraw_wallet,
+    slice vbm,
+    int fee_percent,
+    int min_withdraw,
+    int total_volume,
+    int total_trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(admin_address)
+        .store_slice(deposit_wallet)
+        .store_slice(withdraw_wallet)
+        .store_slice(vbm)
+        .store_uint(fee_percent, 16)
+        .store_coins(min_withdraw)
+        .store_coins(total_volume)
+        .store_uint(total_trades, 64)
+        .store_uint(total_nfts, 64)
+        .store_uint(is_paused, 1)
+        .store_dict(categories)
+        .store_dict(listings)
+        .store_dict(offers)
+        .store_dict(auctions)
+        .end_cell());
+}
+
+;; Calculate marketplace fee
+int calculate_fee(int amount, int fee_percent) inline {
+    return (amount * fee_percent) / FEE_PRECISION;
+}
+
+;; Generate unique ID
+int generate_id(slice seed1, int seed2, int timestamp) inline {
+    cell id_data = begin_cell()
+        .store_slice(seed1)
+        .store_uint(seed2, 256)
+        .store_uint(timestamp, 64)
+        .end_cell();
+    return cell_hash(id_data);
+}
+
+;; ============================================
+;; ADMIN FUNCTIONS - Direct Wallet Approval
+;; ============================================
+
+;; Check if sender is admin
+() require_admin(slice sender, slice admin) inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+}
+
+;; Create new NFT category
+() op_create_category(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    cell categories
+) impure inline {
+    require_admin(sender, admin);
+    
+    slice category_name = in_msg_body~load_ref().begin_parse();
+    slice highload_wallet = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    
+    (slice existing, int exists) = categories.udict_get?(256, category_id);
+    throw_if(ERR_CATEGORY_EXISTS, exists);
+    
+    cell category_data = begin_cell()
+        .store_slice(category_name)
+        .store_slice(highload_wallet)
+        .store_uint(0, 64)
+        .store_uint(1, 1)
+        .end_cell();
+    
+    categories~udict_set(256, category_id, category_data);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_CATEGORY_CREATED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(category_id, 256)
+        .store_ref(category_data);
+    
+    send_raw_message(msg.end_cell(), 64);
+}
+
+;; Set marketplace fee
+() op_set_fee(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    require_admin(sender, admin);
+    
+    int new_fee = in_msg_body~load_uint(16);
+    throw_unless(ERR_INVALID_FEE, new_fee <= MAX_FEE_PERCENT);
+    
+    save_storage(admin, deposit, withdraw, vbm, new_fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Pause/Unpause marketplace
+() op_set_pause(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    require_admin(sender, admin);
+    
+    int new_pause_status = in_msg_body~load_uint(1);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, new_pause_status, categories, listings, offers, auctions);
+}
+
+;; Emergency withdraw - only admin
+() op_emergency_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    int balance
+) impure inline {
+    require_admin(sender, admin);
+    
+    int amount = in_msg_body~load_coins();
+    throw_unless(ERR_INSUFFICIENT_FUNDS, amount <= balance);
+    
+    ;; Send to admin
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_EMERGENCY_WITHDRAW, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 3);
+}
+
+;; ============================================
+;; ENHANCED AUCTION SYSTEM
+;; ============================================
+
+;; Create auction with configurable duration
+() op_create_auction(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    slice nft_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    int start_price = in_msg_body~load_coins();
+    int reserve_price = in_msg_body~load_coins();
+    int min_bid_increment = in_msg_body~load_coins();
+    int duration_days = in_msg_body~load_uint(16);
+    
+    ;; Validate duration: 7 days to 1 year
+    throw_unless(ERR_INVALID_TIME, duration_days >= MIN_AUCTION_DAYS);
+    throw_unless(ERR_INVALID_TIME, duration_days <= MAX_AUCTION_DAYS);
+    
+    throw_unless(ERR_PRICE_TOO_LOW, start_price >= MIN_LISTING_PRICE);
+    throw_unless(ERR_INVALID_PARAM, reserve_price >= start_price);
+    throw_unless(ERR_INVALID_PARAM, min_bid_increment > 0);
+    
+    int start_time = now();
+    int end_time = start_time + (duration_days * DAY_IN_SECONDS);
+    
+    ;; Generate auction ID
+    int auction_id = generate_id(nft_address, category_id, start_time);
+    
+    ;; Create auction config
+    cell auction_config = begin_cell()
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_coins(min_bid_increment)
+        .store_uint(start_time, 64)
+        .store_uint(end_time, 64)
+        .store_coins(0)
+        .store_slice(addr_none())
+        .store_uint(0, 32)
+        .store_uint(1, 1)
+        .end_cell();
+    
+    auctions~udict_set(256, auction_id, auction_config);
+    
+    ;; Create listing
+    cell listing_data = begin_cell()
+        .store_slice(nft_address)
+        .store_slice(sender)
+        .store_coins(start_price)
+        .store_uint(category_id, 256)
+        .store_uint(start_time, 64)
+        .store_uint(end_time, 64)
+        .store_uint(1, 8)  ;; auction type
+        .store_ref(auction_config)
+        .end_cell();
+    
+    listings~udict_set(256, auction_id, listing_data);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_AUCTION_STARTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(auction_id, 256)
+        .store_msg_addr(nft_address)
+        .store_slice(sender)
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_uint(end_time, 64)
+        .store_uint(duration_days, 16)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    ;; Save state
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Place bid on auction
+() op_place_bid(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int auction_id = in_msg_body~load_uint(256);
+    
+    ;; Get auction
+    (slice auction_data, int exists) = auctions.udict_get?(256, auction_id);
+    throw_unless(ERR_AUCTION_NOT_FOUND, exists);
+    
+    slice cs = auction_data.begin_parse();
+    int start_price = cs~load_coins();
+    int reserve_price = cs~load_coins();
+    int min_bid_increment = cs~load_coins();
+    int start_time = cs~load_uint(64);
+    int end_time = cs~load_uint(64);
+    int highest_bid = cs~load_coins();
+    slice highest_bidder = cs~load_msg_addr();
+    int bid_count = cs~load_uint(32);
+    int is_active = cs~load_uint(1);
+    
+    ;; Validate
+    throw_unless(ERR_AUCTION_NOT_FOUND, is_active);
+    throw_unless(ERR_EXPIRED, now() < end_time);
+    throw_unless(ERR_INVALID_TIME, now() >= start_time);
+    
+    ;; Calculate minimum bid
+    int min_bid = highest_bid > 0 ? highest_bid + min_bid_increment : start_price;
+    throw_unless(ERR_BID_TOO_LOW, msg_value >= min_bid);
+    
+    ;; Refund previous highest bidder
+    if (highest_bid > 0 & highest_bidder.slice_bits() == 267) {
+        var refund_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(highest_bidder)
+            .store_coins(highest_bid)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(OP_BID_REFUNDED, 32)
+            .store_uint(query_id, 64)
+            .store_uint(auction_id, 256)
+            .end_cell();
+        send_raw_message(refund_msg, 2);
+    }
+    
+    ;; Update auction
+    cell updated_auction = begin_cell()
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_coins(min_bid_increment)
+        .store_uint(start_time, 64)
+        .store_uint(end_time, 64)
+        .store_coins(msg_value)
+        .store_slice(sender)
+        .store_uint(bid_count + 1, 32)
+        .store_uint(1, 1)
+        .end_cell();
+    
+    auctions~udict_set(256, auction_id, updated_auction);
+    
+    ;; Emit bid event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_AUCTION_BID, 32)
+        .store_uint(query_id, 64)
+        .store_uint(auction_id, 256)
+        .store_slice(sender)
+        .store_coins(msg_value)
+        .store_coins(highest_bid)
+        .store_uint(bid_count + 1, 32)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; End auction and settle
+() op_end_auction(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    int auction_id = in_msg_body~load_uint(256);
+    
+    (slice auction_data, int exists) = auctions.udict_get?(256, auction_id);
+    throw_unless(ERR_AUCTION_NOT_FOUND, exists);
+    
+    (slice listing_data, int listing_exists) = listings.udict_get?(256, auction_id);
+    throw_unless(ERR_NOT_FOUND, listing_exists);
+    
+    slice cs = auction_data.begin_parse();
+    int start_price = cs~load_coins();
+    int reserve_price = cs~load_coins();
+    int min_bid_increment = cs~load_coins();
+    int start_time = cs~load_uint(64);
+    int end_time = cs~load_uint(64);
+    int highest_bid = cs~load_coins();
+    slice highest_bidder = cs~load_msg_addr();
+    int bid_count = cs~load_uint(32);
+    int is_active = cs~load_uint(1);
+    
+    slice ls = listing_data.begin_parse();
+    slice nft_address = ls~load_msg_addr();
+    slice seller = ls~load_msg_addr();
+    ls~load_coins();  ;; price
+    int category_id = ls~load_uint(256);
+    
+    throw_unless(ERR_AUCTION_NOT_ENDED, now() >= end_time);
+    throw_unless(ERR_AUCTION_NOT_FOUND, is_active);
+    
+    int reserve_met = highest_bid >= reserve_price;
+    int has_winner = highest_bid > 0 & highest_bidder.slice_bits() == 267 & reserve_met;
+    
+    if (has_winner) {
+        ;; Calculate fees
+        int marketplace_fee = calculate_fee(highest_bid, fee_percent);
+        int seller_amount = highest_bid - marketplace_fee;
+        
+        ;; Send fee to deposit wallet
+        var fee_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(deposit)
+            .store_coins(marketplace_fee)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(OP_FEE_RECEIVED, 32)
+            .store_uint(query_id, 64)
+            .store_uint(auction_id, 256)
+            .end_cell();
+        send_raw_message(fee_msg, 1);
+        
+        ;; Send payment to seller
+        var seller_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(seller)
+            .store_coins(seller_amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(OP_SALE_PROCEEDS, 32)
+            .store_uint(query_id, 64)
+            .store_uint(auction_id, 256)
+            .end_cell();
+        send_raw_message(seller_msg, 1);
+        
+        ;; Transfer NFT to winner
+        cell transfer_body = begin_cell()
+            .store_uint(0x5fcc3d14, 32)
+            .store_uint(query_id, 64)
+            .store_slice(highest_bidder)
+            .store_slice(seller)
+            .store_uint(0, 1)
+            .store_coins(10000000)
+            .store_uint(0, 1)
+            .end_cell();
+        
+        var nft_msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(nft_address)
+            .store_coins(GAS_TRANSFER)
+            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_ref(transfer_body)
+            .end_cell();
+        send_raw_message(nft_msg, 1);
+        
+    } else {
+        ;; Reserve not met or no bids - refund highest bidder if exists
+        if (highest_bid > 0 & highest_bidder.slice_bits() == 267) {
+            var refund_msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(highest_bidder)
+                .store_coins(highest_bid)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_uint(OP_BID_REFUNDED, 32)
+                .store_uint(query_id, 64)
+                .store_uint(auction_id, 256)
+                .end_cell();
+            send_raw_message(refund_msg, 2);
+        }
+    }
+    
+    ;; Mark as inactive
+    cell ended_auction = begin_cell()
+        .store_coins(start_price)
+        .store_coins(reserve_price)
+        .store_coins(min_bid_increment)
+        .store_uint(start_time, 64)
+        .store_uint(end_time, 64)
+        .store_coins(highest_bid)
+        .store_slice(highest_bidder)
+        .store_uint(bid_count, 32)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    auctions~udict_set(256, auction_id, ended_auction);
+    listings~udict_delete?(256, auction_id);
+    
+    ;; Update stats
+    int new_trades = has_winner ? trades + 1 : trades;
+    int new_volume = has_winner ? vol + highest_bid : vol;
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_AUCTION_ENDED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(auction_id, 256)
+        .store_msg_addr(nft_address)
+        .store_slice(seller)
+        .store_slice(has_winner ? highest_bidder : addr_none())
+        .store_coins(highest_bid)
+        .store_uint(reserve_met, 1)
+        .store_uint(has_winner, 1)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, new_volume, new_trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; ============================================
+;; ENHANCED OFFER SYSTEM
+;; ============================================
+
+;; Make offer with custom duration
+() op_make_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    slice nft_address = in_msg_body~load_msg_addr();
+    slice seller = in_msg_body~load_msg_addr();
+    int offer_amount = in_msg_body~load_coins();
+    int duration_hours = in_msg_body~load_uint(16);
+    
+    ;; Validate duration: 1 hour to 30 days
+    int min_duration_seconds = duration_hours * HOUR_IN_SECONDS;
+    throw_unless(ERR_INVALID_TIME, duration_hours >= 1);
+    throw_unless(ERR_INVALID_TIME, duration_hours <= (MAX_OFFER_DAYS * 24));
+    throw_unless(ERR_INSUFFICIENT_FUNDS, msg_value >= offer_amount);
+    throw_unless(ERR_PRICE_TOO_LOW, offer_amount >= MIN_LISTING_PRICE);
+    
+    int offer_id = generate_id(nft_address, sender~hash(), now());
+    int created_at = now();
+    int expires_at = created_at + min_duration_seconds;
+    
+    ;; Store offer with TON locked in contract
+    cell offer_data = begin_cell()
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(sender)  ;; buyer
+        .store_slice(seller)
+        .store_coins(offer_amount)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(0, 8)  ;; status: pending
+        .end_cell();
+    
+    offers~udict_set(256, offer_id, offer_data);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_MADE, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(sender)
+        .store_slice(seller)
+        .store_coins(offer_amount)
+        .store_uint(expires_at, 64)
+        .store_uint(duration_hours, 16)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Accept offer
+() op_accept_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int offer_id = in_msg_body~load_uint(256);
+    
+    (slice offer_data, int exists) = offers.udict_get?(256, offer_id);
+    throw_unless(ERR_OFFER_NOT_FOUND, exists);
+    
+    slice cs = offer_data.begin_parse();
+    int id = cs~load_uint(256);
+    slice nft_address = cs~load_msg_addr();
+    slice buyer = cs~load_msg_addr();
+    slice seller = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    int created_at = cs~load_uint(64);
+    int expires_at = cs~load_uint(64);
+    int status = cs~load_uint(8);
+    
+    ;; Validate
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, seller));
+    throw_unless(ERR_OFFER_EXPIRED, status == 0);
+    throw_unless(ERR_EXPIRED, now() < expires_at);
+    
+    ;; Calculate fees
+    int marketplace_fee = calculate_fee(amount, fee_percent);
+    int seller_amount = amount - marketplace_fee;
+    
+    ;; Send fee to deposit wallet
+    var fee_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(deposit)
+        .store_coins(marketplace_fee)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_FEE_RECEIVED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    send_raw_message(fee_msg, 1);
+    
+    ;; Send payment to seller
+    var seller_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(seller)
+        .store_coins(seller_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_PROCEEDS, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    send_raw_message(seller_msg, 1);
+    
+    ;; Transfer NFT to buyer
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)
+        .store_uint(query_id, 64)
+        .store_slice(buyer)
+        .store_slice(seller)
+        .store_uint(0, 1)
+        .store_coins(10000000)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    var nft_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(GAS_TRANSFER)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    send_raw_message(nft_msg, 1);
+    
+    ;; Update offer status
+    cell updated_offer = begin_cell()
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(buyer)
+        .store_slice(seller)
+        .store_coins(amount)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(1, 8)  ;; accepted
+        .end_cell();
+    
+    offers~udict_set(256, offer_id, updated_offer);
+    
+    ;; Update stats
+    int new_trades = trades + 1;
+    int new_volume = vol + amount;
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_ACCEPTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(seller)
+        .store_slice(buyer)
+        .store_coins(amount)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, new_volume, new_trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Reject offer - return TON to buyer
+() op_reject_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int offer_id = in_msg_body~load_uint(256);
+    
+    (slice offer_data, int exists) = offers.udict_get?(256, offer_id);
+    throw_unless(ERR_OFFER_NOT_FOUND, exists);
+    
+    slice cs = offer_data.begin_parse();
+    int id = cs~load_uint(256);
+    slice nft_address = cs~load_msg_addr();
+    slice buyer = cs~load_msg_addr();
+    slice seller = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    int created_at = cs~load_uint(64);
+    int expires_at = cs~load_uint(64);
+    int status = cs~load_uint(8);
+    
+    ;; Only seller can reject
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, seller));
+    throw_unless(ERR_OFFER_EXPIRED, status == 0);
+    throw_unless(ERR_EXPIRED, now() < expires_at);
+    
+    ;; Return TON to buyer
+    var refund_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(buyer)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_REJECTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    send_raw_message(refund_msg, 2);
+    
+    ;; Update status
+    cell updated_offer = begin_cell()
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(buyer)
+        .store_slice(seller)
+        .store_coins(amount)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(2, 8)  ;; rejected
+        .end_cell();
+    
+    offers~udict_set(256, offer_id, updated_offer);
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_REJECTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .store_slice(buyer)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Cancel expired offer - can be called by anyone
+() op_cancel_expired_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    int offer_id = in_msg_body~load_uint(256);
+    
+    (slice offer_data, int exists) = offers.udict_get?(256, offer_id);
+    throw_unless(ERR_OFFER_NOT_FOUND, exists);
+    
+    slice cs = offer_data.begin_parse();
+    int id = cs~load_uint(256);
+    slice nft_address = cs~load_msg_addr();
+    slice buyer = cs~load_msg_addr();
+    slice seller = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    int created_at = cs~load_uint(64);
+    int expires_at = cs~load_uint(64);
+    int status = cs~load_uint(8);
+    
+    ;; Must be pending and expired
+    throw_unless(ERR_OFFER_EXPIRED, status == 0);
+    throw_unless(ERR_NOT_EXPIRED, now() >= expires_at);
+    
+    ;; Return TON to buyer
+    var refund_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(buyer)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    send_raw_message(refund_msg, 2);
+    
+    ;; Update status
+    cell updated_offer = begin_cell()
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(buyer)
+        .store_slice(seller)
+        .store_coins(amount)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(3, 8)  ;; expired
+        .end_cell();
+    
+    offers~udict_set(256, offer_id, updated_offer);
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .store_slice(buyer)
+        .store_uint(expires_at, 64)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Cancel offer by buyer
+() op_cancel_offer(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int offer_id = in_msg_body~load_uint(256);
+    
+    (slice offer_data, int exists) = offers.udict_get?(256, offer_id);
+    throw_unless(ERR_OFFER_NOT_FOUND, exists);
+    
+    slice cs = offer_data.begin_parse();
+    int id = cs~load_uint(256);
+    slice nft_address = cs~load_msg_addr();
+    slice buyer = cs~load_msg_addr();
+    slice seller = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    int created_at = cs~load_uint(64);
+    int expires_at = cs~load_uint(64);
+    int status = cs~load_uint(8);
+    
+    ;; Only buyer can cancel
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, buyer));
+    throw_unless(ERR_OFFER_EXPIRED, status == 0);
+    throw_unless(ERR_EXPIRED, now() < expires_at);
+    
+    ;; Return TON to buyer
+    var refund_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(buyer)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    send_raw_message(refund_msg, 2);
+    
+    ;; Update status
+    cell updated_offer = begin_cell()
+        .store_uint(offer_id, 256)
+        .store_slice(nft_address)
+        .store_slice(buyer)
+        .store_slice(seller)
+        .store_coins(amount)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(4, 8)  ;; cancelled
+        .end_cell();
+    
+    offers~udict_set(256, offer_id, updated_offer);
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_OFFER_CANCELLED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(offer_id, 256)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; ============================================
+;; FIXED PRICE LISTING
+;; ============================================
+
+() op_list_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    slice nft_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    int price = in_msg_body~load_coins();
+    
+    throw_unless(ERR_PRICE_TOO_LOW, price >= MIN_LISTING_PRICE);
+    
+    int listing_id = generate_id(nft_address, sender~hash(), now());
+    int created_at = now();
+    int expires_at = created_at + (MAX_AUCTION_DAYS * DAY_IN_SECONDS);
+    
+    cell listing_data = begin_cell()
+        .store_slice(nft_address)
+        .store_slice(sender)
+        .store_coins(price)
+        .store_uint(category_id, 256)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(0, 8)  ;; fixed price
+        .store_ref(begin_cell().end_cell())
+        .end_cell();
+    
+    listings~udict_set(256, listing_id, listing_data);
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_LISTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(listing_id, 256)
+        .store_msg_addr(nft_address)
+        .store_slice(sender)
+        .store_coins(price)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; Buy NFT at fixed price
+() op_buy_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int listing_id = in_msg_body~load_uint(256);
+    
+    (slice listing_data, int exists) = listings.udict_get?(256, listing_id);
+    throw_unless(ERR_NOT_FOUND, exists);
+    
+    slice ls = listing_data.begin_parse();
+    slice nft_address = ls~load_msg_addr();
+    slice seller = ls~load_msg_addr();
+    int price = ls~load_coins();
+    int category_id = ls~load_uint(256);
+    
+    throw_unless(ERR_INSUFFICIENT_FUNDS, msg_value >= price);
+    
+    ;; Calculate fees
+    int marketplace_fee = calculate_fee(price, fee_percent);
+    int seller_amount = price - marketplace_fee;
+    
+    ;; Send fee to deposit wallet
+    var fee_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(deposit)
+        .store_coins(marketplace_fee)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_FEE_RECEIVED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(listing_id, 256)
+        .end_cell();
+    send_raw_message(fee_msg, 1);
+    
+    ;; Send payment to seller
+    var seller_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(seller)
+        .store_coins(seller_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_PROCEEDS, 32)
+        .store_uint(query_id, 64)
+        .store_uint(listing_id, 256)
+        .end_cell();
+    send_raw_message(seller_msg, 1);
+    
+    ;; Transfer NFT to buyer
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)
+        .store_uint(query_id, 64)
+        .store_slice(sender)
+        .store_slice(seller)
+        .store_uint(0, 1)
+        .store_coins(10000000)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    var nft_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(GAS_TRANSFER)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    send_raw_message(nft_msg, 1);
+    
+    ;; Remove listing
+    listings~udict_delete?(256, listing_id);
+    
+    ;; Update stats
+    int new_trades = trades + 1;
+    int new_volume = vol + price;
+    
+    ;; Emit event
+    var event_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_SOLD, 32)
+        .store_uint(query_id, 64)
+        .store_uint(listing_id, 256)
+        .store_msg_addr(nft_address)
+        .store_slice(seller)
+        .store_slice(sender)
+        .store_coins(price)
+        .store_uint(category_id, 256)
+        .end_cell();
+    
+    send_raw_message(event_msg, 64);
+    
+    save_storage(admin, deposit, withdraw, vbm, fee_percent, min_wd, new_volume, new_trades, total_nfts, is_paused, categories, listings, offers, auctions);
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        ;; Simple TON transfer - treat as deposit
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    
+    var (admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions) = load_storage();
+    
+    ;; Admin operations
+    if (op == OP_CREATE_CATEGORY) {
+        op_create_category(sender, query_id, in_msg_body, admin, categories);
+        save_storage(admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_SET_FEE) {
+        op_set_fee(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_PAUSE_MARKETPLACE) {
+        op_set_pause(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_EMERGENCY_WITHDRAW) {
+        op_emergency_withdraw(sender, query_id, in_msg_body, admin, my_balance());
+        return ();
+    }
+    
+    ;; Listing operations
+    if (op == OP_LIST_NFT) {
+        op_list_nft(sender, query_id, in_msg_body, msg_value, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_BUY_NFT) {
+        op_buy_nft(sender, query_id, in_msg_body, msg_value, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    ;; Auction operations
+    if (op == OP_CREATE_AUCTION) {
+        op_create_auction(sender, query_id, in_msg_body, msg_value, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_PLACE_BID) {
+        op_place_bid(sender, query_id, in_msg_body, msg_value, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_END_AUCTION) {
+        op_end_auction(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    ;; Offer operations
+    if (op == OP_MAKE_OFFER) {
+        op_make_offer(sender, query_id, in_msg_body, msg_value, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_ACCEPT_OFFER) {
+        op_accept_offer(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_REJECT_OFFER) {
+        op_reject_offer(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_CANCEL_OFFER) {
+        op_cancel_offer(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_CANCEL_EXPIRED_OFFER) {
+        op_cancel_expired_offer(sender, query_id, in_msg_body, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    throw(ERR_INVALID_OP);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+(int, int, int, int, slice, slice, slice, slice, int, int) get_marketplace_info() method_id {
+    var (admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, _, _, _, _) = load_storage();
+    return (fee, min_wd, vol, trades, admin, deposit, withdraw, vbm, total_nfts, is_paused);
+}
+
+(int, int, int, int, int, int, int, slice, int, int) get_auction_info(int auction_id) method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, _, _, auctions) = load_storage();
+    
+    (slice data, int exists) = auctions.udict_get?(256, auction_id);
+    throw_unless(ERR_AUCTION_NOT_FOUND, exists);
+    
+    slice cs = data.begin_parse();
+    int start_price = cs~load_coins();
+    int reserve_price = cs~load_coins();
+    int min_bid_increment = cs~load_coins();
+    int start_time = cs~load_uint(64);
+    int end_time = cs~load_uint(64);
+    int highest_bid = cs~load_coins();
+    slice highest_bidder = cs~load_msg_addr();
+    int bid_count = cs~load_uint(32);
+    int is_active = cs~load_uint(1);
+    
+    int time_remaining = end_time > now() ? end_time - now() : 0;
+    
+    return (start_price, reserve_price, min_bid_increment, highest_bid, bid_count, time_remaining, highest_bidder, is_active, start_time, end_time);
+}
+
+(slice, slice, int, int, int, int, int, int) get_offer_info(int offer_id) method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, _, offers, _) = load_storage();
+    
+    (slice data, int exists) = offers.udict_get?(256, offer_id);
+    throw_unless(ERR_OFFER_NOT_FOUND, exists);
+    
+    slice cs = data.begin_parse();
+    int id = cs~load_uint(256);
+    slice nft_address = cs~load_msg_addr();
+    slice buyer = cs~load_msg_addr();
+    slice seller = cs~load_msg_addr();
+    int amount = cs~load_coins();
+    int created_at = cs~load_uint(64);
+    int expires_at = cs~load_uint(64);
+    int status = cs~load_uint(8);
+    
+    int time_remaining = expires_at > now() ? expires_at - now() : 0;
+    int is_expired = now() >= expires_at;
+    
+    return (nft_address, buyer, amount, status, time_remaining, is_expired, created_at, expires_at);
+}
+
+int get_active_listings_count() method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, listings, _, _) = load_storage();
+    return listings.dict_empty?() ? 0 : listings.dict_count(256);
+}
+
+int get_active_offers_count() method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, _, offers, _) = load_storage();
+    return offers.dict_empty?() ? 0 : offers.dict_count(256);
+}
+
+int get_active_auctions_count() method_id {
+    var (_, _, _, _, _, _, _, _, _, _, _, _, _, auctions) = load_storage();
+    return auctions.dict_empty?() ? 0 : auctions.dict_count(256);
+}
