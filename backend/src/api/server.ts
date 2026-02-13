@@ -26,6 +26,7 @@ import { transactionRouter } from './routes/transaction.routes';
 import { marketplaceRouter } from './routes/marketplace.routes';
 import { adminRouter } from './routes/admin.routes';
 import { healthRouter } from './routes/health.routes';
+import { webhookRouter } from './routes/webhook.routes';
 
 export class APIServer {
   private app: Application;
@@ -96,6 +97,7 @@ export class APIServer {
     this.app.use('/api/transactions', transactionRouter);
     this.app.use('/api/marketplace', marketplaceRouter);
     this.app.use('/api/admin', adminRouter);
+    this.app.use('/api/webhooks', webhookRouter);
 
     // 404 handler
     this.app.use((req: Request, res: Response) => {

@@ -1,0 +1,491 @@
+;; ============================================
+;; NFT MARKETPLACE SMART CONTRACT - UPGRADEABLE V4
+;; Implementation for proxy pattern
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+#include "utils.fc";
+
+;; ============================================
+;; CONSTANTS
+;; ============================================
+const int MAX_FEE_PERCENT = 1000;
+const int FEE_PRECISION = 10000;
+const int MIN_LISTING_PRICE = 10000000;
+const int MIN_AUCTION_DAYS = 7;
+const int MAX_AUCTION_DAYS = 365;
+const int MIN_OFFER_HOURS = 1;
+const int MAX_OFFER_DAYS = 30;
+const int DAY_IN_SECONDS = 86400;
+const int HOUR_IN_SECONDS = 3600;
+
+;; Gas constants
+const int GAS_MINT = 20000000;
+const int GAS_TRANSFER = 15000000;
+const int GAS_SALE = 25000000;
+const int GAS_OFFER = 20000000;
+
+;; ============================================
+;; STORAGE LAYOUT V4 (Upgradeable)
+;; ============================================
+;; storage#_ 
+;;   proxy_address:MsgAddress         ;; Reference to proxy
+;;   admin_address:MsgAddress
+;;   deposit_wallet:MsgAddress
+;;   withdraw_wallet:MsgAddress
+;;   virtual_balance_manager:MsgAddress
+;;   marketplace_fee_percent:uint16
+;;   min_withdraw_amount:Coins
+;;   total_volume:Coins
+;;   total_trades:uint64
+;;   total_nfts:uint64
+;;   is_paused:Bool
+;;   version:uint32                   ;; Implementation version
+;;   nft_categories:(HashmapE 256 NftCategory)
+;;   active_listings:(HashmapE 256 Listing)
+;;   active_offers:(HashmapE 256 Offer)
+;;   auctions:(HashmapE 256 AuctionConfig)
+;;   = Storage;
+
+;; ============================================
+;; STORAGE FUNCTIONS
+;; ============================================
+
+(slice, slice, slice, slice, slice, int, int, int, int, int, int, int, cell, cell, cell, cell) load_storage() inline {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),           ;; proxy_address
+        ds~load_msg_addr(),           ;; admin_address
+        ds~load_msg_addr(),           ;; deposit_wallet
+        ds~load_msg_addr(),           ;; withdraw_wallet
+        ds~load_msg_addr(),           ;; virtual_balance_manager
+        ds~load_uint(16),             ;; marketplace_fee_percent
+        ds~load_coins(),              ;; min_withdraw_amount
+        ds~load_coins(),              ;; total_volume
+        ds~load_uint(64),             ;; total_trades
+        ds~load_uint(64),             ;; total_nfts
+        ds~load_uint(1),              ;; is_paused
+        ds~load_uint(32),             ;; version
+        ds~load_dict(),               ;; nft_categories
+        ds~load_dict(),               ;; active_listings
+        ds~load_dict(),               ;; active_offers
+        ds~load_dict()                ;; auctions
+    );
+}
+
+() save_storage(
+    slice proxy,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_withdraw,
+    int total_volume,
+    int total_trades,
+    int total_nfts,
+    int is_paused,
+    int version,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(proxy)
+        .store_slice(admin)
+        .store_slice(deposit)
+        .store_slice(withdraw)
+        .store_slice(vbm)
+        .store_uint(fee_percent, 16)
+        .store_coins(min_withdraw)
+        .store_coins(total_volume)
+        .store_uint(total_trades, 64)
+        .store_uint(total_nfts, 64)
+        .store_uint(is_paused, 1)
+        .store_uint(version, 32)
+        .store_dict(categories)
+        .store_dict(listings)
+        .store_dict(offers)
+        .store_dict(auctions)
+        .end_cell());
+}
+
+;; ============================================
+;; HELPER FUNCTIONS
+;; ============================================
+
+int calculate_fee(int amount, int fee_percent) inline {
+    return (amount * fee_percent) / FEE_PRECISION;
+}
+
+int generate_id(slice seed1, int seed2, int timestamp) inline {
+    cell id_data = begin_cell()
+        .store_slice(seed1)
+        .store_uint(seed2, 256)
+        .store_uint(timestamp, 64)
+        .end_cell();
+    return cell_hash(id_data);
+}
+
+() require_admin(slice sender, slice admin) inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+}
+
+() require_proxy(slice sender, slice proxy) inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, proxy));
+}
+
+;; ============================================
+;; INITIALIZATION
+;; ============================================
+
+() op_initialize(
+    slice sender,
+    int query_id,
+    slice in_msg_body
+) impure inline {
+    ;; Only callable during deployment
+    slice proxy = in_msg_body~load_msg_addr();
+    slice admin = in_msg_body~load_msg_addr();
+    slice deposit = in_msg_body~load_msg_addr();
+    slice withdraw = in_msg_body~load_msg_addr();
+    slice vbm = in_msg_body~load_msg_addr();
+    int fee = in_msg_body~load_uint(16);
+    int min_wd = in_msg_body~load_coins();
+    
+    save_storage(
+        proxy, admin, deposit, withdraw, vbm,
+        fee, min_wd, 0, 0, 0, 0, 1,  ;; version 1
+        new_dict(), new_dict(), new_dict(), new_dict()
+    );
+}
+
+;; ============================================
+;; ADMIN FUNCTIONS
+;; ============================================
+
+() op_create_category(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice proxy,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    int version,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    require_admin(sender, admin);
+    
+    slice category_name = in_msg_body~load_ref().begin_parse();
+    slice highload_wallet = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    
+    (slice existing, int exists) = categories.udict_get?(256, category_id);
+    throw_if(ERR_CATEGORY_EXISTS, exists);
+    
+    cell category_data = begin_cell()
+        .store_slice(category_name)
+        .store_slice(highload_wallet)
+        .store_uint(0, 64)
+        .store_uint(1, 1)
+        .end_cell();
+    
+    categories~udict_set(256, category_id, category_data);
+    
+    save_storage(proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+}
+
+() op_set_fee(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice proxy,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    int version,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    require_admin(sender, admin);
+    
+    int new_fee = in_msg_body~load_uint(16);
+    throw_unless(ERR_INVALID_FEE, new_fee <= MAX_FEE_PERCENT);
+    
+    save_storage(proxy, admin, deposit, withdraw, vbm, new_fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+}
+
+() op_emergency_withdraw(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice proxy,
+    slice admin,
+    int balance
+) impure inline {
+    require_admin(sender, admin);
+    
+    int amount = in_msg_body~load_coins();
+    throw_unless(ERR_INSUFFICIENT_FUNDS, amount <= balance);
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(admin)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_EMERGENCY_WITHDRAW, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 3);
+}
+
+;; ============================================
+;; LISTING FUNCTIONS
+;; ============================================
+
+() op_list_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice proxy,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    int version,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    slice nft_address = in_msg_body~load_msg_addr();
+    int category_id = in_msg_body~load_uint(256);
+    int price = in_msg_body~load_coins();
+    
+    throw_unless(ERR_PRICE_TOO_LOW, price >= MIN_LISTING_PRICE);
+    
+    int listing_id = generate_id(nft_address, sender~hash(), now());
+    int created_at = now();
+    int expires_at = created_at + (MAX_AUCTION_DAYS * DAY_IN_SECONDS);
+    
+    cell listing_data = begin_cell()
+        .store_slice(nft_address)
+        .store_slice(sender)
+        .store_coins(price)
+        .store_uint(category_id, 256)
+        .store_uint(created_at, 64)
+        .store_uint(expires_at, 64)
+        .store_uint(0, 8)
+        .store_ref(begin_cell().end_cell())
+        .end_cell();
+    
+    listings~udict_set(256, listing_id, listing_data);
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_NFT_LISTED, 32)
+        .store_uint(query_id, 64)
+        .store_uint(listing_id, 256)
+        .store_msg_addr(nft_address)
+        .store_slice(sender)
+        .store_coins(price)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+    
+    save_storage(proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+}
+
+() op_buy_nft(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    int msg_value,
+    slice proxy,
+    slice admin,
+    slice deposit,
+    slice withdraw,
+    slice vbm,
+    int fee_percent,
+    int min_wd,
+    int vol,
+    int trades,
+    int total_nfts,
+    int is_paused,
+    int version,
+    cell categories,
+    cell listings,
+    cell offers,
+    cell auctions
+) impure inline {
+    throw_if(ERR_CONTRACT_PAUSED, is_paused);
+    
+    int listing_id = in_msg_body~load_uint(256);
+    
+    (slice listing_data, int exists) = listings.udict_get?(256, listing_id);
+    throw_unless(ERR_NOT_FOUND, exists);
+    
+    slice ls = listing_data.begin_parse();
+    slice nft_address = ls~load_msg_addr();
+    slice seller = ls~load_msg_addr();
+    int price = ls~load_coins();
+    int category_id = ls~load_uint(256);
+    
+    throw_unless(ERR_INSUFFICIENT_FUNDS, msg_value >= price);
+    
+    int marketplace_fee = calculate_fee(price, fee_percent);
+    int seller_amount = price - marketplace_fee;
+    
+    ;; Send fee
+    var fee_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(deposit)
+        .store_coins(marketplace_fee)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_FEE_RECEIVED, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    send_raw_message(fee_msg, 1);
+    
+    ;; Send to seller
+    var seller_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(seller)
+        .store_coins(seller_amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_SALE_PROCEEDS, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    send_raw_message(seller_msg, 1);
+    
+    ;; Transfer NFT
+    cell transfer_body = begin_cell()
+        .store_uint(0x5fcc3d14, 32)
+        .store_uint(query_id, 64)
+        .store_slice(sender)
+        .store_slice(seller)
+        .store_uint(0, 1)
+        .store_coins(10000000)
+        .store_uint(0, 1)
+        .end_cell();
+    
+    var nft_msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(nft_address)
+        .store_coins(GAS_TRANSFER)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(transfer_body)
+        .end_cell();
+    send_raw_message(nft_msg, 1);
+    
+    listings~udict_delete?(256, listing_id);
+    
+    int new_trades = trades + 1;
+    int new_volume = vol + price;
+    
+    save_storage(proxy, admin, deposit, withdraw, vbm, fee_percent, min_wd, new_volume, new_trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    
+    ;; Load storage
+    var (proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions) = load_storage();
+    
+    ;; Verify sender is proxy
+    require_proxy(sender, proxy);
+    
+    ;; Re-read sender from original message (the actual user)
+    sender = cs~load_msg_addr();
+    
+    ;; Admin operations
+    if (op == OP_CREATE_CATEGORY) {
+        op_create_category(sender, query_id, in_msg_body, proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_SET_FEE) {
+        op_set_fee(sender, query_id, in_msg_body, proxy, admin, deposit, withdraw, vbm, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_EMERGENCY_WITHDRAW) {
+        op_emergency_withdraw(sender, query_id, in_msg_body, proxy, admin, my_balance());
+        return ();
+    }
+    
+    ;; Listing operations
+    if (op == OP_LIST_NFT) {
+        op_list_nft(sender, query_id, in_msg_body, msg_value, proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    if (op == OP_BUY_NFT) {
+        op_buy_nft(sender, query_id, in_msg_body, msg_value, proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, categories, listings, offers, auctions);
+        return ();
+    }
+    
+    throw(ERR_INVALID_OP);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+(int, int, int, int, slice, slice, slice, slice, slice, int, int) get_marketplace_info() method_id {
+    var (proxy, admin, deposit, withdraw, vbm, fee, min_wd, vol, trades, total_nfts, is_paused, version, _, _, _, _) = load_storage();
+    return (fee, min_wd, vol, trades, proxy, admin, deposit, withdraw, vbm, total_nfts, version);
+}

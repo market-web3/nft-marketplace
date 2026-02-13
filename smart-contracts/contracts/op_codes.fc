@@ -1,6 +1,13 @@
 ;; ============================================
-;; OPERATION CODES - V3 Enhanced
+;; OPERATION CODES - V4 Upgradeable
 ;; ============================================
+
+;; Proxy Operations (0x0000-0x00FF)
+const int OP_UPGRADE_IMPLEMENTATION = 0x0001;
+const int OP_CHANGE_ADMIN = 0x0002;
+const int OP_PROXY_PAUSED = 0x0003;
+const int OP_PROXY_UNPAUSED = 0x0004;
+const int OP_ADMIN_CHANGED = 0x0005;
 
 ;; Admin Operations (0x1000-0x10FF)
 const int OP_CREATE_CATEGORY = 0x1001;
