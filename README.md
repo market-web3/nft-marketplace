@@ -1,11 +1,12 @@
 # TON NFT Marketplace - Complete System
 
-A production-ready, full-featured NFT marketplace built on The Open Network (TON) blockchain with enhanced auction system, offer management, and Telegram integration.
+A production-ready, full-featured NFT marketplace built on The Open Network (TON) blockchain with enhanced auction system, offer management, Telegram integration, and upgradeable smart contracts.
 
 ## 🚀 Features
 
-### Smart Contracts (FunC)
-- **Main Marketplace Contract V3** (`nft_marketplace_v3.fc`)
+### Smart Contracts (FunC) - UPGRADEABLE
+- **Proxy Pattern**: Contract address never changes during upgrades
+- **Main Marketplace Contract V4** (`nft_marketplace_upgradeable.fc`)
   - Admin wallet direct approval - no admin panel dependency in contract
   - **Enhanced Auction System**: Configurable duration (7 days to 1 year)
   - **Enhanced Offer System**: Time-limited offers (1 hour to 30 days)
@@ -14,6 +15,11 @@ A production-ready, full-featured NFT marketplace built on The Open Network (TON
   - Fixed price listings
   - NFT deposit/withdrawal
   - Virtual balance support
+  - **Security Features**:
+    - Emergency pause/unpause
+    - Admin transfer capability
+    - Emergency withdrawal
+    - Version tracking
 
 ### Backend (Node.js/TypeScript)
 - Microservices architecture
@@ -22,13 +28,16 @@ A production-ready, full-featured NFT marketplace built on The Open Network (TON
 - PostgreSQL database
 - Anti double-spend protection
 - Rate limiting
+- RabbitMQ message queue
+- Background job processing with BullMQ
 
 ### Frontend (Next.js/React)
 - **Wallet Integration**: TonConnect support
 - **Home Page**: Animated hero, stats, categories, featured NFTs, trending auctions
 - **Market Page**: Search, filters, sorting, grid/list view
 - **Inventory Page**: NFTs, deposited items, Telegram gifts
-- **Profile Page**: Stats, created/owned NFTs, activity history
+- **Profile Page**: Stats, created/owned NFTs, activity history, Telegram connection
+- **Telegram Integration**: Connect Telegram account, receive notifications
 - **Responsive Design**: Mobile, tablet, desktop optimized
 - **Dark Mode**: Full dark mode support
 
@@ -37,7 +46,7 @@ A production-ready, full-featured NFT marketplace built on The Open Network (TON
 - **NFT Management**: Approve/reject NFTs, view all listings
 - **Auction Management**: Create, start, end auctions
 - **Offers Management**: Monitor and manage offers
-- **Telegram Gifts**: Sync with Telegram, manage withdrawals
+- **Telegram Gifts**: Sync with Telegram, manage withdrawals, send gifts
 - **User Management**: View, ban/unban users
 - **Settings**: Configure marketplace, wallets, Telegram
 
@@ -54,31 +63,32 @@ A production-ready, full-featured NFT marketplace built on The Open Network (TON
 nft-marketplace/
 ├── smart-contracts/          # TON FunC contracts
 │   ├── contracts/
-│   │   ├── nft_marketplace_v3.fc    # Main contract (enhanced)
-│   │   ├── auction.fc               # Auction contract
-│   │   ├── op_codes.fc              # Operation codes
-│   │   ├── errors.fc                # Error codes
-│   │   └── utils.fc                 # Utility functions
-│   └── wrappers/                   # Contract wrappers
+│   │   ├── proxy.fc                     # Upgradeable proxy contract
+│   │   ├── nft_marketplace_upgradeable.fc # Implementation contract
+│   │   ├── nft_marketplace_v3.fc        # Legacy V3 (for reference)
+│   │   ├── auction.fc                   # Auction contract
+│   │   ├── op_codes.fc                  # Operation codes
+│   │   ├── errors.fc                    # Error codes
+│   │   └── utils.fc                     # Utility functions
+│   └── wrappers/                        # TypeScript wrappers
 ├── backend/                       # Node.js microservices
 │   └── src/
+│       ├── api/routes/           # API endpoints
+│       ├── services/             # Business logic
+│       ├── workers/              # Background jobs
+│       └── shared/               # Utilities, middleware
 ├── frontend/                      # Next.js web app
 │   └── src/
 │       ├── app/                  # Next.js app router
 │       ├── components/
-│       │   ├── home/            # Home page components
-│       │   ├── layout/          # Layout components
-│       │   ├── common/          # Shared components
-│       │   └── providers/       # Context providers
-│       └── store/               # Zustand store
+│       │   ├── telegram/         # Telegram integration
+│       │   └── ...
+│       └── store/                # Zustand store
 ├── admin-panel/                   # React admin dashboard
-│   └── src/
-│       ├── components/
-│       └── pages/
+│   └── src/pages/                # Admin pages
 ├── telegram-bot/                  # Telegram bot
-│   └── src/
-│       └── services/
-└── docker/                       # Docker configurations
+│   └── src/services/             # Bot services
+└── scripts/                       # Deployment scripts
 ```
 
 ## 🔧 Installation
@@ -102,11 +112,22 @@ cp .env.example .env
 # Edit .env with your configuration
 nano .env
 
-# Install dependencies and start all services
-cd frontend && npm install && npm run dev
-cd ../admin-panel && npm install && npm run dev
-cd ../telegram-bot && npm install && npm run dev
-cd ../backend && npm install && npm run dev
+# Install dependencies
+cd backend && npm install
+cd ../frontend && npm install
+cd ../admin-panel && npm install
+cd ../telegram-bot && npm install
+
+# Setup database
+cd ../backend
+npm run db:migrate
+npm run db:seed
+
+# Start all services
+cd ../backend && npm run dev
+cd ../frontend && npm run dev
+cd ../admin-panel && npm run dev
+cd ../telegram-bot && npm run dev
 ```
 
 ### Smart Contract Deployment
@@ -114,14 +135,23 @@ cd ../backend && npm install && npm run dev
 ```bash
 cd smart-contracts
 
+# Install dependencies
+npm install
+
 # Compile contracts
 npm run build
 
-# Deploy main contract
-npm run deploy:marketplace
+# Deploy proxy (address never changes!)
+npm run deploy:proxy
+
+# Deploy first implementation
+npm run deploy:implementation
 
 # Create NFT category
 npm run create-category --name="Art Collection"
+
+# Upgrade implementation (proxy address stays the same!)
+npm run upgrade
 ```
 
 ## ⚙️ Configuration
@@ -140,66 +170,60 @@ REDIS_URL=redis://localhost:6379
 # TON
 TON_API_KEY=your_toncenter_api_key
 TON_NETWORK=testnet
-TON_CONTRACT_ADDRESS=EQ...
+TON_CONTRACT_ADDRESS=EQ...  # This is the PROXY address - never changes!
 TON_ADMIN_WALLET_MNEMONIC=word1 word2 ... word24
 
 # Security
 JWT_SECRET=your_jwt_secret
 
 # Telegram
-TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_WEBHOOK_URL=https://your-domain.com/webhook
 ```
 
-## 📝 Smart Contract Features
+## 🔐 Upgradeable Smart Contracts
 
-### Auction System
-- **Minimum Duration**: 7 days
-- **Maximum Duration**: 365 days (1 year)
-- **Bid Refunds**: Automatic refund of previous highest bidder
-- **Reserve Price**: Seller can set minimum acceptable price
-- **Fee Distribution**: Automatic fee calculation and distribution
+The marketplace uses the proxy pattern for upgradeability:
 
-### Offer System
-- **Duration**: 1 hour to 30 days (user configurable)
-- **TON Locking**: Offer amount locked in contract
-- **Auto-expiry**: Expired offers automatically return TON to buyer
-- **Accept/Reject**: Seller can accept (distributes TON) or reject (returns TON)
+1. **Proxy Contract**: Holds the state, never changes address
+2. **Implementation Contract**: Contains the logic, can be upgraded
+3. **Admin**: Can upgrade implementation without affecting users
 
-### Admin Operations
-All admin operations are performed directly from the admin wallet:
-- Create categories
-- Set marketplace fee
-- Pause/resume marketplace
-- Emergency withdraw
+### How Upgrades Work
 
-No admin panel functionality exists in the contract - it's all wallet-based for security.
+```
+┌─────────────────┐
+│  Users dApps    │
+└────────┬────────┘
+         │ Always use this address
+         ▼
+┌─────────────────┐
+│  Proxy Contract │  ← Never changes, holds state
+│  Address: EQ... │
+└────────┬────────┘
+         │ Delegates to
+         ▼
+┌─────────────────┐
+│ Implementation  │  ← Can be upgraded
+│  Contract V1    │
+└─────────────────┘
+         ▲
+         │ Upgrade
+         ▼
+┌─────────────────┐
+│ Implementation  │
+│  Contract V2    │
+└─────────────────┘
+```
 
-## 🎨 Frontend Features
+### Security Features
 
-### Animations
-- Smooth page transitions
-- Hover effects on NFT cards
-- Floating elements in hero section
-- Loading skeletons
-- Countdown timers for auctions
+- **Emergency Pause**: Stop all operations in case of emergency
+- **Admin Transfer**: Transfer admin rights securely
+- **Emergency Withdraw**: Recover funds if needed
+- **Version Tracking**: Track which implementation is active
 
-### Responsive Design
-- Mobile-first approach
-- Breakpoints: sm (640px), md (768px), lg (1024px), xl (1280px)
-- Adaptive navigation (mobile menu)
-- Responsive grid layouts
-
-## 🤖 Telegram Bot Commands
-
-- `/start` - Start the bot
-- `/help` - Show help
-- `/inventory` - View your NFTs
-- `/deposit` - Deposit a gift
-- `/withdraw` - Withdraw a gift
-- `/link` - Link website account
-- `/balance` - Check balance
-
-## 📊 API Endpoints
+## 📝 API Documentation
 
 ### Authentication
 - `POST /api/auth/nonce` - Generate auth nonce
@@ -211,6 +235,7 @@ No admin panel functionality exists in the contract - it's all wallet-based for 
 - `GET /api/nfts/:id` - Get NFT details
 - `POST /api/nfts/deposit` - Deposit NFT
 - `POST /api/nfts/withdraw` - Withdraw NFT
+- `POST /api/nfts/receive-gift` - Receive offchain gift
 
 ### Auctions
 - `GET /api/auctions` - List active auctions
@@ -224,13 +249,28 @@ No admin panel functionality exists in the contract - it's all wallet-based for 
 - `POST /api/offers/:id/accept` - Accept offer
 - `POST /api/offers/:id/reject` - Reject offer
 
-## 🔐 Security Features
+### Telegram Gifts (Offchain)
+- `GET /api/admin/gifts` - List all gifts
+- `GET /api/admin/gifts/pending` - Get pending withdrawals
+- `POST /api/admin/gifts/:id/send` - Send gift to user
+- `POST /api/admin/gifts/sync` - Sync with Telegram
 
-- **Anti Double-Spend**: Transaction tracking
-- **Replay Protection**: Nonce-based validation
-- **Rate Limiting**: Per-user and global limits
-- **Hash Comments**: Secure deposit verification
-- **Wallet Verification**: Signature-based auth
+## 🤖 Telegram Bot Commands
+
+- `/start` - Start the bot
+- `/help` - Show help
+- `/inventory` - View your NFT inventory
+- `/deposit` - Deposit a gift
+- `/withdraw` - Withdraw a gift
+- `/link` - Link website account
+- `/balance` - Check balance
+
+## 🔐 Security Considerations
+
+1. **Proxy Pattern**: Always interact with the proxy address, never directly with implementations
+2. **Admin Keys**: Keep admin wallet mnemonic secure and use multisig in production
+3. **Upgrades**: Test upgrades thoroughly on testnet before mainnet
+4. **Monitoring**: Monitor contract events for suspicious activity
 
 ## 📈 Performance
 
@@ -252,13 +292,6 @@ npm run test:contracts
 # E2E tests
 npm run test:e2e
 ```
-
-## 📚 Documentation
-
-- [Smart Contract Guide](docs/smart-contracts.md)
-- [API Documentation](docs/api.md)
-- [Deployment Guide](docs/deployment.md)
-- [Architecture Overview](docs/architecture.md)
 
 ## 🤝 Contributing
 

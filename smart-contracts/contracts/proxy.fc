@@ -1,0 +1,253 @@
+;; ============================================
+;; NFT MARKETPLACE PROXY CONTRACT
+;; Upgradeable proxy pattern for TON
+;; ============================================
+
+#include "stdlib.fc";
+#include "op_codes.fc";
+#include "errors.fc";
+
+;; ============================================
+;; STORAGE LAYOUT FOR PROXY
+;; ============================================
+;; storage#_ 
+;;   implementation_address:MsgAddress  ;; Current implementation contract
+;;   admin_address:MsgAddress           ;; Admin who can upgrade
+;;   paused:Bool                        ;; Emergency pause
+;;   version:uint32                     ;; Current version
+;;   = ProxyStorage;
+
+;; ============================================
+;; STORAGE FUNCTIONS
+;; ============================================
+
+(slice, slice, int, int) load_proxy_storage() inline {
+    var ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),    ;; implementation_address
+        ds~load_msg_addr(),    ;; admin_address
+        ds~load_uint(1),       ;; paused
+        ds~load_uint(32)       ;; version
+    );
+}
+
+() save_proxy_storage(
+    slice implementation,
+    slice admin,
+    int paused,
+    int version
+) impure inline {
+    set_data(begin_cell()
+        .store_slice(implementation)
+        .store_slice(admin)
+        .store_uint(paused, 1)
+        .store_uint(version, 32)
+        .end_cell());
+}
+
+;; ============================================
+;; ADMIN FUNCTIONS
+;; ============================================
+
+() op_upgrade(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice admin,
+    int paused,
+    int version
+) impure inline {
+    ;; Only admin can upgrade
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    ;; Load new implementation address
+    slice new_implementation = in_msg_body~load_msg_addr();
+    
+    ;; Increment version
+    int new_version = version + 1;
+    
+    ;; Save new storage
+    save_proxy_storage(new_implementation, admin, paused, new_version);
+    
+    ;; Emit upgrade event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_UPGRADE_IMPLEMENTATION, 32)
+        .store_uint(query_id, 64)
+        .store_slice(new_implementation)
+        .store_uint(new_version, 32)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+}
+
+() op_set_admin(
+    slice sender,
+    int query_id,
+    slice in_msg_body,
+    slice implementation,
+    slice current_admin,
+    int paused,
+    int version
+) impure inline {
+    ;; Only current admin can change admin
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, current_admin));
+    
+    slice new_admin = in_msg_body~load_msg_addr();
+    
+    save_proxy_storage(implementation, new_admin, paused, version);
+    
+    ;; Emit event
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_ADMIN_CHANGED, 32)
+        .store_uint(query_id, 64)
+        .store_slice(new_admin)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+}
+
+() op_pause(
+    slice sender,
+    int query_id,
+    slice implementation,
+    slice admin,
+    int version
+) impure inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    save_proxy_storage(implementation, admin, 1, version);
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_PROXY_PAUSED, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+}
+
+() op_unpause(
+    slice sender,
+    int query_id,
+    slice implementation,
+    slice admin,
+    int version
+) impure inline {
+    throw_unless(ERR_UNAUTHORIZED, equal_slices(sender, admin));
+    
+    save_proxy_storage(implementation, admin, 0, version);
+    
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(sender)
+        .store_coins(0)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(OP_PROXY_UNPAUSED, 32)
+        .store_uint(query_id, 64)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+}
+
+;; ============================================
+;; MAIN RECEIVE FUNCTION
+;; ============================================
+
+() recv_internal(int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        ;; Simple TON transfer - forward to implementation
+        return ();
+    }
+    
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+    
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    
+    if (flags & 1) {
+        ;; Bounced message
+        return ();
+    }
+    
+    slice sender = cs~load_msg_addr();
+    
+    var (implementation, admin, paused, version) = load_proxy_storage();
+    
+    ;; Handle proxy admin operations
+    if (op == OP_UPGRADE_IMPLEMENTATION) {
+        op_upgrade(sender, query_id, in_msg_body, admin, paused, version);
+        return ();
+    }
+    
+    if (op == OP_CHANGE_ADMIN) {
+        op_set_admin(sender, query_id, in_msg_body, implementation, admin, paused, version);
+        return ();
+    }
+    
+    if (op == OP_PAUSE_MARKETPLACE) {
+        op_pause(sender, query_id, implementation, admin, version);
+        return ();
+    }
+    
+    if (op == OP_RESUME_MARKETPLACE) {
+        op_unpause(sender, query_id, implementation, admin, version);
+        return ();
+    }
+    
+    ;; Check if paused
+    throw_if(ERR_CONTRACT_PAUSED, paused);
+    
+    ;; Forward all other operations to implementation
+    ;; Build message to implementation contract
+    cell forward_body = begin_cell()
+        .store_uint(op, 32)
+        .store_uint(query_id, 64)
+        .store_slice(in_msg_body)
+        .end_cell();
+    
+    ;; Send to implementation with remaining value
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(implementation)
+        .store_coins(0)
+        .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(forward_body)
+        .end_cell();
+    
+    send_raw_message(msg, 64);
+}
+
+;; ============================================
+;; GET METHODS
+;; ============================================
+
+(slice, slice, int, int) get_proxy_info() method_id {
+    return load_proxy_storage();
+}
+
+slice get_implementation() method_id {
+    var (implementation, _, _, _) = load_proxy_storage();
+    return implementation;
+}
+
+int get_version() method_id {
+    var (_, _, _, version) = load_proxy_storage();
+    return version;
+}
+
+int is_paused() method_id {
+    var (_, _, paused, _) = load_proxy_storage();
+    return paused;
+}
