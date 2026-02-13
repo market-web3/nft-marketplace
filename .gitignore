@@ -4,22 +4,23 @@ node_modules/
 .pnp.js
 
 # Build outputs
+.next/
 dist/
 build/
-.next/
 out/
 
-# Environment variables
+# Environment files
 .env
 .env.local
-.env.*.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Logs
-logs/
-*.log
+# Debug logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
 lerna-debug.log*
 
 # Testing
@@ -32,24 +33,37 @@ coverage/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # OS
-.DS_Store
 Thumbs.db
 
-# Smart Contracts
-smart-contracts/build/
-smart-contracts/wrappers/*.compiled.ts
-
-# Database
-*.sqlite
-*.sqlite3
-
-# Redis
-dump.rdb
+# Cache
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
 
 # Misc
-.cache/
-temp/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Smart contracts
+smart-contracts/build/
+smart-contracts/*.cell
+smart-contracts/*.fif
+
+# Database
+*.db
+*.sqlite
+
+# Backup files
+*.bak
+*.backup
+
+# Temp files
 tmp/
+temp/
 *.tmp

@@ -2,186 +2,198 @@
  * User Model
  */
 
-import { Knex } from 'knex';
+import { DatabaseManager } from '../utils/database';
+import { logger } from '../utils/logger';
 
-export interface IUser {
-  id: string;
-  walletAddress: string | null;
-  telegramId: string | null;
-  telegramUsername: string | null;
-  nonce: string;
-  isVerified: boolean;
-  virtualBalance: string;
-  totalVolume: string;
-  tradeCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-  lastLoginAt: Date | null;
-  isBanned: boolean;
-  banReason: string | null;
-  preferences: IUserPreferences;
+export interface CreateUserData {
+  walletAddress: string;
+  username?: string;
+  avatarUrl?: string;
+  bio?: string;
+  telegramId?: string;
+  telegramUsername?: string;
 }
 
-export interface IUserPreferences {
-  notifications: {
-    sale: boolean;
-    offer: boolean;
-    auction: boolean;
-    login: boolean;
-    deposit: boolean;
-    withdraw: boolean;
-  };
-  language: string;
-  currency: string;
+export interface UpdateUserData {
+  username?: string;
+  avatarUrl?: string;
+  bio?: string;
 }
-
-export const defaultUserPreferences: IUserPreferences = {
-  notifications: {
-    sale: true,
-    offer: true,
-    auction: true,
-    login: true,
-    deposit: true,
-    withdraw: true,
-  },
-  language: 'en',
-  currency: 'TON',
-};
 
 export class UserModel {
-  private static tableName = 'users';
-
-  static async findById(knex: Knex, id: string): Promise<IUser | null> {
-    const user = await knex(this.tableName).where({ id }).first();
-    return user ? this.parseUser(user) : null;
+  static async create(data: CreateUserData): Promise<any> {
+    const db = DatabaseManager.getInstance();
+    
+    try {
+      const [user] = await db('users')
+        .insert({
+          wallet_address: data.walletAddress,
+          username: data.username,
+          avatar_url: data.avatarUrl,
+          bio: data.bio,
+          telegram_id: data.telegramId,
+          telegram_username: data.telegramUsername,
+        })
+        .returning('*');
+      
+      return user;
+    } catch (error) {
+      logger.error('Failed to create user:', error);
+      throw error;
+    }
   }
 
-  static async findByWallet(knex: Knex, walletAddress: string): Promise<IUser | null> {
-    const user = await knex(this.tableName)
-      .where({ walletAddress: walletAddress.toLowerCase() })
+  static async findById(id: string): Promise<any | null> {
+    const db = DatabaseManager.getInstance();
+    
+    const user = await db('users')
+      .select('*')
+      .where('id', id)
       .first();
-    return user ? this.parseUser(user) : null;
+    
+    return user || null;
   }
 
-  static async findByTelegram(knex: Knex, telegramId: string): Promise<IUser | null> {
-    const user = await knex(this.tableName).where({ telegramId }).first();
-    return user ? this.parseUser(user) : null;
+  static async findByWallet(walletAddress: string): Promise<any | null> {
+    const db = DatabaseManager.getInstance();
+    
+    const user = await db('users')
+      .select('*')
+      .where('wallet_address', walletAddress)
+      .first();
+    
+    return user || null;
   }
 
-  static async create(knex: Knex, data: Partial<IUser>): Promise<IUser> {
-    const [user] = await knex(this.tableName)
-      .insert({
+  static async findByTelegramId(telegramId: string): Promise<any | null> {
+    const db = DatabaseManager.getInstance();
+    
+    const user = await db('users')
+      .select('*')
+      .where('telegram_id', telegramId)
+      .first();
+    
+    return user || null;
+  }
+
+  static async update(id: string, data: UpdateUserData): Promise<any> {
+    const db = DatabaseManager.getInstance();
+    
+    const [user] = await db('users')
+      .where('id', id)
+      .update({
         ...data,
-        preferences: JSON.stringify(data.preferences || defaultUserPreferences),
-        virtualBalance: '0',
-        totalVolume: '0',
-        tradeCount: 0,
-        isVerified: false,
-        isBanned: false,
+        updated_at: new Date(),
       })
       .returning('*');
-    return this.parseUser(user);
+    
+    return user;
   }
 
-  static async update(knex: Knex, id: string, data: Partial<IUser>): Promise<IUser | null> {
-    const updateData: any = { ...data, updatedAt: new Date() };
+  static async linkTelegram(id: string, data: { telegramId: string; telegramUsername?: string }): Promise<any> {
+    const db = DatabaseManager.getInstance();
     
-    if (data.preferences) {
-      updateData.preferences = JSON.stringify(data.preferences);
-    }
-
-    const [user] = await knex(this.tableName)
-      .where({ id })
-      .update(updateData)
+    const [user] = await db('users')
+      .where('id', id)
+      .update({
+        telegram_id: data.telegramId,
+        telegram_username: data.telegramUsername,
+        updated_at: new Date(),
+      })
       .returning('*');
     
-    return user ? this.parseUser(user) : null;
+    return user;
   }
 
-  static async updateVirtualBalance(
-    knex: Knex,
-    id: string,
-    amount: string,
-    operation: 'add' | 'subtract'
-  ): Promise<boolean> {
-    const result = await knex.raw(
-      `
-      UPDATE users 
-      SET virtual_balance = virtual_balance ${operation === 'add' ? '+' : '-'} ?::numeric,
-          updated_at = NOW()
-      WHERE id = ?
-      RETURNING *
-      `,
-      [amount, id]
-    );
-    return result.rowCount > 0;
-  }
-
-  static async updateStats(
-    knex: Knex,
-    id: string,
-    volume: string
-  ): Promise<boolean> {
-    const result = await knex.raw(
-      `
-      UPDATE users 
-      SET total_volume = total_volume + ?::numeric,
-          trade_count = trade_count + 1,
-          updated_at = NOW()
-      WHERE id = ?
-      `,
-      [volume, id]
-    );
-    return result.rowCount > 0;
-  }
-
-  static async search(
-    knex: Knex,
-    query: string,
-    limit: number = 20,
-    offset: number = 0
-  ): Promise<IUser[]> {
-    const users = await knex(this.tableName)
-      .where('walletAddress', 'ilike', `%${query}%`)
-      .orWhere('telegramUsername', 'ilike', `%${query}%`)
-      .limit(limit)
-      .offset(offset)
-      .orderBy('createdAt', 'desc');
+  static async updateLastActive(id: string): Promise<void> {
+    const db = DatabaseManager.getInstance();
     
-    return users.map(this.parseUser);
+    await db('users')
+      .where('id', id)
+      .update({
+        last_active: new Date(),
+      });
   }
 
-  static async getLeaderboard(
-    knex: Knex,
-    limit: number = 100
-  ): Promise<IUser[]> {
-    const users = await knex(this.tableName)
-      .where('isBanned', false)
-      .orderBy('totalVolume', 'desc')
-      .limit(limit);
+  static async getStats(id: string): Promise<any> {
+    const db = DatabaseManager.getInstance();
     
-    return users.map(this.parseUser);
-  }
+    const [
+      ownedNfts,
+      createdNfts,
+      totalSales,
+      totalVolume,
+    ] = await Promise.all([
+      db('nfts').where('owner_id', id).count('* as count').first(),
+      db('nfts').where('creator_id', id).count('* as count').first(),
+      db('transactions').where('from_user_id', id).where('type', 'sale').count('* as count').first(),
+      db('transactions').where('from_user_id', id).where('type', 'sale').sum('amount as total').first(),
+    ]);
 
-  private static parseUser(row: any): IUser {
     return {
-      id: row.id,
-      walletAddress: row.wallet_address,
-      telegramId: row.telegram_id,
-      telegramUsername: row.telegram_username,
-      nonce: row.nonce,
-      isVerified: row.is_verified,
-      virtualBalance: row.virtual_balance,
-      totalVolume: row.total_volume,
-      tradeCount: row.trade_count,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      lastLoginAt: row.last_login_at,
-      isBanned: row.is_banned,
-      banReason: row.ban_reason,
-      preferences: typeof row.preferences === 'string' 
-        ? JSON.parse(row.preferences) 
-        : row.preferences,
+      ownedNfts: parseInt(ownedNfts?.count as string) || 0,
+      createdNfts: parseInt(createdNfts?.count as string) || 0,
+      totalSales: parseInt(totalSales?.count as string) || 0,
+      totalVolume: totalVolume?.total || 0,
+    };
+  }
+
+  static async getInventory(id: string, page: number = 1, limit: number = 20): Promise<any> {
+    const db = DatabaseManager.getInstance();
+    const offset = (page - 1) * limit;
+    
+    const nfts = await db('nfts')
+      .select(
+        'nfts.*',
+        'categories.name as category_name',
+        'listings.price',
+        'listings.status as listing_status'
+      )
+      .leftJoin('categories', 'nfts.category_id', 'categories.id')
+      .leftJoin('listings', 'nfts.id', 'listings.nft_id')
+      .where('nfts.owner_id', id)
+      .orderBy('nfts.created_at', 'desc')
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await db('nfts')
+      .where('owner_id', id)
+      .count('* as count');
+
+    return {
+      items: nfts,
+      pagination: {
+        page,
+        limit,
+        total: parseInt(count as string),
+        totalPages: Math.ceil(parseInt(count as string) / limit),
+      },
+    };
+  }
+
+  static async getActivity(id: string, page: number = 1, limit: number = 20): Promise<any> {
+    const db = DatabaseManager.getInstance();
+    const offset = (page - 1) * limit;
+    
+    const activities = await db('activity_log')
+      .select('*')
+      .where('user_id', id)
+      .orderBy('created_at', 'desc')
+      .limit(limit)
+      .offset(offset);
+
+    const [{ count }] = await db('activity_log')
+      .where('user_id', id)
+      .count('* as count');
+
+    return {
+      items: activities,
+      pagination: {
+        page,
+        limit,
+        total: parseInt(count as string),
+        totalPages: Math.ceil(parseInt(count as string) / limit),
+      },
     };
   }
 }

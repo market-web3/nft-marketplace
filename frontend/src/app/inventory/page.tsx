@@ -2,228 +2,225 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Package, Gift, ArrowUpRight, Eye, Filter, Grid3X3, List } from 'lucide-react';
+import { 
+  Package, 
+  Download, 
+  Upload, 
+  Gift, 
+  Search,
+  Filter
+} from 'lucide-react';
 import { NFTCard } from '@/components/common/NFTCard';
-import { useMarketStore } from '@/store/marketStore';
-import { TonConnectButton, useTonConnectUI } from '@tonconnect/ui-react';
+import { Button } from '@/components/common/Button';
+import { Modal } from '@/components/common/Modal';
 
 const tabs = [
-  { id: 'owned', label: 'My NFTs', icon: Package },
-  { id: 'deposited', label: 'Deposited', icon: ArrowUpRight },
+  { id: 'all', label: 'All Items', icon: Package },
+  { id: 'deposited', label: 'Deposited', icon: Download },
+  { id: 'listed', label: 'Listed', icon: Upload },
   { id: 'gifts', label: 'Telegram Gifts', icon: Gift },
 ];
 
-const mockOwnedNFTs = [
-  { id: '1', name: 'Cosmic Wanderer #001', image: '/nfts/1.jpg', price: 25.5, currency: 'TON', creator: { name: 'Cosmic Arts', avatar: '/a/1.jpg', verified: true }, likes: 234, views: 1205, category: 'Art' },
-  { id: '3', name: 'Neon Cyberpunk #77', image: '/nfts/3.jpg', price: 18.25, currency: 'TON', creator: { name: 'Cyber Labs', avatar: '/a/3.jpg', verified: false }, likes: 156, views: 743, category: 'Gaming' },
-  { id: '5', name: 'Music Beats #42', image: '/nfts/5.jpg', price: 12.5, currency: 'TON', creator: { name: 'BeatMaker', avatar: '/a/5.jpg', verified: true }, likes: 98, views: 456, category: 'Music' },
-];
-
-const mockGifts = [
-  { id: 'g1', name: 'Star Gift #1234', image: '/gifts/star.jpg', price: 5, currency: 'TON', creator: { name: 'Telegram', avatar: '/a/tg.jpg', verified: true }, likes: 56, views: 234, category: 'Collectibles' },
-  { id: 'g2', name: 'Rocket Gift #567', image: '/gifts/rocket.jpg', price: 8, currency: 'TON', creator: { name: 'Telegram', avatar: '/a/tg.jpg', verified: true }, likes: 89, views: 567, category: 'Collectibles' },
-];
-
 export default function InventoryPage() {
-  const [activeTab, setActiveTab] = useState('owned');
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const { isConnected } = useMarketStore();
-  const [tonConnectUI] = useTonConnectUI();
-
-  const getNFTsForTab = () => {
-    switch (activeTab) {
-      case 'owned':
-        return mockOwnedNFTs;
-      case 'gifts':
-        return mockGifts;
-      default:
-        return [];
-    }
-  };
-
-  if (!isConnected && !tonConnectUI.connected) {
-    return (
-      <div className="min-h-screen pt-24 pb-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass-card p-12 text-center"
-          >
-            <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-              <Package className="w-10 h-10 text-blue-600 dark:text-blue-400" />
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-4">
-              Connect Your Wallet
-            </h1>
-            <p className="text-slate-600 dark:text-slate-400 mb-8 max-w-md mx-auto">
-              Connect your TON wallet to view your NFT inventory, manage deposits, and see your Telegram gifts
-            </p>
-            <TonConnectButton />
-          </motion.div>
-        </div>
-      </div>
-    );
-  }
+  const [activeTab, setActiveTab] = useState('all');
+  const [isDepositModalOpen, setIsDepositModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   return (
-    <div className="min-h-screen pt-24 pb-12">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 pt-8">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
-        >
-          <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 dark:text-white mb-2">
-            My Inventory
-          </h1>
-          <p className="text-slate-600 dark:text-slate-400">
-            Manage your NFTs, deposits, and Telegram gifts
-          </p>
-        </motion.div>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
+              My Inventory
+            </h1>
+            <p className="text-slate-600 dark:text-slate-400 mt-1">
+              Manage your NFTs, deposits, and Telegram gifts
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <Button
+              variant="outline"
+              onClick={() => setIsDepositModalOpen(true)}
+              icon={<Download className="w-4 h-4" />}
+            >
+              Deposit NFT
+            </Button>
+            <Button
+              icon={<Upload className="w-4 h-4" />}
+            >
+              List for Sale
+            </Button>
+          </div>
+        </div>
 
         {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8"
-        >
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           {[
-            { label: 'Total NFTs', value: '12', color: 'blue' },
-            { label: 'Total Value', value: '56.25 TON', color: 'green' },
-            { label: 'Deposited', value: '3', color: 'purple' },
-            { label: 'Gifts', value: '2', color: 'orange' },
+            { label: 'Total Items', value: 24, color: 'blue' },
+            { label: 'Deposited', value: 12, color: 'green' },
+            { label: 'Listed', value: 8, color: 'purple' },
+            { label: 'Gifts', value: 4, color: 'amber' },
           ].map((stat) => (
-            <div key={stat.label} className="glass-card p-4">
-              <p className="text-sm text-slate-500 dark:text-slate-400 mb-1">{stat.label}</p>
+            <motion.div
+              key={stat.label}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`bg-${stat.color}-50 dark:bg-${stat.color}-900/20 rounded-xl p-4 border border-${stat.color}-200 dark:border-${stat.color}-800`}
+            >
               <p className={`text-2xl font-bold text-${stat.color}-600 dark:text-${stat.color}-400`}>
                 {stat.value}
               </p>
-            </div>
-          ))}
-        </motion.div>
-
-        {/* Tabs */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="flex flex-wrap gap-2 mb-6"
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                activeTab === tab.id
-                  ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/25'
-                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-              }`}
-            >
-              <tab.icon className="w-5 h-5" />
-              {tab.label}
-            </button>
-          ))}
-        </motion.div>
-
-        {/* Filters & View Toggle */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="flex items-center justify-between mb-6"
-        >
-          <div className="flex items-center gap-4">
-            <span className="text-slate-600 dark:text-slate-400">
-              {getNFTsForTab().length} items
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button className="p-2 rounded-lg bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-              <Filter className="w-5 h-5" />
-            </button>
-            <div className="flex gap-1 bg-white dark:bg-slate-800 rounded-lg p-1">
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-2 rounded-md transition-colors ${
-                  viewMode === 'grid' ? 'bg-blue-500 text-white' : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                <Grid3X3 className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`p-2 rounded-md transition-colors ${
-                  viewMode === 'list' ? 'bg-blue-500 text-white' : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                <List className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </motion.div>
-
-        {/* NFT Grid */}
-        {activeTab === 'gifts' && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800"
-          >
-            <div className="flex items-start gap-3">
-              <Gift className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5" />
-              <div>
-                <h4 className="font-medium text-slate-900 dark:text-white">Telegram Gifts</h4>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
-                  These are off-chain Telegram gifts that can be withdrawn to your Telegram account or traded on the marketplace
-                </p>
-              </div>
-            </div>
-          </motion.div>
-        )}
-
-        <motion.div
-          layout
-          className={`grid gap-6 ${
-            viewMode === 'grid'
-              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-              : 'grid-cols-1'
-          }`}
-        >
-          {getNFTsForTab().map((nft, index) => (
-            <motion.div
-              key={nft.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-            >
-              <NFTCard nft={nft} />
+              <p className="text-sm text-slate-600 dark:text-slate-400">{stat.label}</p>
             </motion.div>
           ))}
-        </motion.div>
+        </div>
 
-        {getNFTsForTab().length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-20"
-          >
-            <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
-              <Package className="w-10 h-10 text-slate-400" />
+        {/* Tabs & Filters */}
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          <div className="flex bg-white dark:bg-slate-800 rounded-xl p-1 border border-slate-200 dark:border-slate-700 overflow-x-auto">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors whitespace-nowrap ${
+                    activeTab === tab.id
+                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                      : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search your inventory..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </div>
+
+        {/* Content */}
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="pb-12"
+        >
+          {activeTab === 'gifts' ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {[1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  className="bg-white dark:bg-slate-800 rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700"
+                >
+                  <div className="aspect-square bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
+                    <Gift className="w-16 h-16 text-white" />
+                  </div>
+                  <div className="p-4">
+                    <h3 className="font-semibold text-slate-900 dark:text-white">
+                      Telegram Gift #{i}
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-1">
+                      Received from @user{i}
+                    </p>
+                    <div className="flex gap-2 mt-4">
+                      <Button variant="outline" size="sm" fullWidth>
+                        Withdraw
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
-            <h3 className="text-xl font-semibold text-slate-900 dark:text-white mb-2">
-              No items found
-            </h3>
-            <p className="text-slate-600 dark:text-slate-400">
-              {activeTab === 'gifts' 
-                ? 'You don\'t have any Telegram gifts yet'
-                : 'You don\'t have any NFTs in this category'}
-            </p>
-          </motion.div>
-        )}
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <NFTCard
+                  key={i}
+                  nft={{
+                    id: `inventory-${i}`,
+                    name: `Inventory NFT #${i}`,
+                    imageUrl: `https://picsum.photos/400/300?random=${i + 200}`,
+                    price: activeTab === 'listed' ? 1500000000 * i : undefined,
+                    status: activeTab === 'listed' ? 'listed' : 'active',
+                    likes: 5 * i,
+                    owner: {
+                      walletAddress: 'EQD...1234',
+                    },
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </motion.div>
       </div>
+
+      {/* Deposit Modal */}
+      <Modal
+        isOpen={isDepositModalOpen}
+        onClose={() => setIsDepositModalOpen(false)}
+        title="Deposit NFT"
+        size="md"
+      >
+        <div className="space-y-6">
+          <div className="bg-blue-50 dark:bg-blue-900/20 rounded-xl p-4">
+            <h4 className="font-medium text-blue-900 dark:text-blue-100 mb-2">
+              How to deposit
+            </h4>
+            <ol className="text-sm text-blue-800 dark:text-blue-200 space-y-2 list-decimal list-inside">
+              <li>Copy the marketplace deposit address</li>
+              <li>Send your NFT to this address from your wallet</li>
+              <li>Wait for confirmation (usually 1-2 minutes)</li>
+              <li>Your NFT will appear in your deposited items</li>
+            </ol>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              Deposit Address
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                readOnly
+                value="EQCkW2Ucbl0Gw3P8mT..."
+                className="flex-1 px-4 py-2 bg-slate-100 dark:bg-slate-700 rounded-xl text-slate-900 dark:text-white"
+              />
+              <Button
+                variant="outline"
+                onClick={() => navigator.clipboard.writeText('EQCkW2Ucbl0Gw3P8mT...')}
+              >
+                Copy
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <Button
+              variant="outline"
+              fullWidth
+              onClick={() => setIsDepositModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button fullWidth>
+              I&apos;ve Sent the NFT
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

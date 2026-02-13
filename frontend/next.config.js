@@ -1,31 +1,45 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    appDir: true,
-  },
+  reactStrictMode: true,
+  swcMinify: true,
   images: {
-    domains: ['ipfs.io', 'gateway.ipfs.io', 'cloudflare-ipfs.com'],
+    domains: ['images.unsplash.com', 'picsum.photos'],
     remotePatterns: [
       {
         protocol: 'https',
-        hostname: '**.ipfs.io',
+        hostname: '**.unsplash.com',
       },
       {
         protocol: 'https',
-        hostname: '**.nftstorage.link',
+        hostname: '**.picsum.photos',
       },
     ],
   },
-  env: {
-    API_URL: process.env.API_URL || 'http://localhost:3000',
-    GATEWAY_URL: process.env.GATEWAY_URL || 'ws://localhost:3001',
-    TON_CONNECT_MANIFEST: process.env.TON_CONNECT_MANIFEST || 'https://your-domain.com/tonconnect-manifest.json',
+  experimental: {
+    appDir: true,
   },
-  async rewrites() {
+  async headers() {
     return [
       {
-        source: '/api/:path*',
-        destination: `${process.env.API_URL || 'http://localhost:3000'}/api/:path*`,
+        source: '/:path*',
+        headers: [
+          {
+            key: 'X-DNS-Prefetch-Control',
+            value: 'on',
+          },
+          {
+            key: 'X-XSS-Protection',
+            value: '1; mode=block',
+          },
+          {
+            key: 'X-Frame-Options',
+            value: 'SAMEORIGIN',
+          },
+          {
+            key: 'X-Content-Type-Options',
+            value: 'nosniff',
+          },
+        ],
       },
     ];
   },

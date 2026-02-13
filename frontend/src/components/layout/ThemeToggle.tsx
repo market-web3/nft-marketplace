@@ -1,12 +1,12 @@
 'use client';
 
 import { useTheme } from 'next-themes';
-import { motion } from 'framer-motion';
-import { Sun, Moon } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Sun, Moon, Monitor } from 'lucide-react';
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -15,29 +15,46 @@ export function ThemeToggle() {
 
   if (!mounted) {
     return (
-      <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800" />
+      <div className="w-9 h-9 rounded-lg bg-slate-200 dark:bg-slate-800" />
     );
   }
 
+  const themes = [
+    { id: 'light', icon: Sun, label: 'Light' },
+    { id: 'dark', icon: Moon, label: 'Dark' },
+    { id: 'system', icon: Monitor, label: 'System' },
+  ];
+
   return (
-    <motion.button
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
-      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-      className="relative p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-      aria-label="Toggle theme"
-    >
-      <motion.div
-        initial={false}
-        animate={{ rotate: theme === 'dark' ? 0 : 180 }}
-        transition={{ duration: 0.3 }}
-      >
-        {theme === 'dark' ? (
-          <Moon className="w-5 h-5" />
-        ) : (
-          <Sun className="w-5 h-5" />
-        )}
-      </motion.div>
-    </motion.button>
+    <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
+      {themes.map((t) => {
+        const Icon = t.icon;
+        const isActive = theme === t.id;
+
+        return (
+          <motion.button
+            key={t.id}
+            onClick={() => setTheme(t.id)}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            className={`relative p-2 rounded-md transition-colors ${
+              isActive
+                ? 'text-blue-600 dark:text-blue-400'
+                : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+            }`}
+            title={t.label}
+          >
+            {isActive && (
+              <motion.div
+                layoutId="theme-indicator"
+                className="absolute inset-0 bg-white dark:bg-slate-700 rounded-md shadow-sm"
+                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+              />
+            )}
+            <Icon className="w-4 h-4 relative z-10" />
+          </motion.button>
+        );
+      })}
+    </div>
   );
 }
