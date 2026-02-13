@@ -2,224 +2,266 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
+import Image from 'next/image';
 import { 
-  Copy, ExternalLink, Edit3, Grid, Heart, 
-  Activity, Settings, Wallet, Award
+  Wallet, 
+  Copy, 
+  ExternalLink, 
+  Grid3X3, 
+  Heart, 
+  History,
+  Settings,
+  Edit3
 } from 'lucide-react';
 import { NFTCard } from '@/components/common/NFTCard';
-import { TonConnectButton, useTonConnectUI } from '@tonconnect/ui-react';
-import toast from 'react-hot-toast';
+import { Button } from '@/components/common/Button';
 
 const tabs = [
-  { id: 'created', label: 'Created', icon: Grid },
-  { id: 'owned', label: 'Owned', icon: Wallet },
-  { id: 'activity', label: 'Activity', icon: Activity },
+  { id: 'owned', label: 'Owned', icon: Grid3X3 },
+  { id: 'created', label: 'Created', icon: Edit3 },
   { id: 'favorites', label: 'Favorites', icon: Heart },
+  { id: 'activity', label: 'Activity', icon: History },
 ];
 
-const mockCreatedNFTs = [
-  { id: 'c1', name: 'My Art #1', image: '/nfts/1.jpg', price: 10, currency: 'TON', creator: { name: 'You', avatar: '/a/me.jpg', verified: true }, likes: 45, views: 234, category: 'Art' },
-  { id: 'c2', name: 'My Art #2', image: '/nfts/2.jpg', price: 15, currency: 'TON', creator: { name: 'You', avatar: '/a/me.jpg', verified: true }, likes: 67, views: 456, category: 'Art' },
-];
-
-const mockActivity = [
-  { type: 'buy', item: 'Cosmic Wanderer #001', price: 25.5, date: '2 hours ago' },
-  { type: 'sell', item: 'Digital Genesis', price: 42, date: '1 day ago' },
-  { type: 'bid', item: 'Legendary Dragon #001', price: 150, date: '2 days ago' },
-];
+const mockUser = {
+  username: 'crypto_artist',
+  walletAddress: 'EQD...1234',
+  avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200',
+  bio: 'Digital artist and NFT collector on TON blockchain',
+  joinedAt: '2024-01-15',
+  stats: {
+    totalNfts: 42,
+    totalSales: 15,
+    totalVolume: 12500000000,
+    followers: 1289,
+    following: 456,
+  },
+};
 
 export default function ProfilePage() {
-  const [activeTab, setActiveTab] = useState('created');
-  const [isEditing, setIsEditing] = useState(false);
-  const [tonConnectUI] = useTonConnectUI();
+  const [activeTab, setActiveTab] = useState('owned');
+  const [copied, setCopied] = useState(false);
 
-  const copyAddress = () => {
-    if (tonConnectUI.account?.address) {
-      navigator.clipboard.writeText(tonConnectUI.account.address);
-      toast.success('Address copied to clipboard');
-    }
+  const handleCopyAddress = () => {
+    navigator.clipboard.writeText(mockUser.walletAddress);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
-  if (!tonConnectUI.connected) {
-    return (
-      <div className="min-h-screen pt-24 pb-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="glass-card p-12 text-center"
-          >
-            <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-              <Wallet className="w-10 h-10 text-blue-600 dark:text-blue-400" />
-            </div>
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-4">
-              Connect Your Wallet
-            </h1>
-            <p className="text-slate-600 dark:text-slate-400 mb-8 max-w-md mx-auto">
-              Connect your TON wallet to view your profile, track your activity, and manage your NFTs
-            </p>
-            <TonConnectButton />
-          </motion.div>
-        </div>
-      </div>
-    );
-  }
-
-  const address = tonConnectUI.account?.address || '';
-  const shortAddress = `${address.slice(0, 6)}...${address.slice(-4)}`;
-
   return (
-    <div className="min-h-screen pt-24 pb-12">
-      {/* Cover Image */}
-      <div className="h-64 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 relative">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+      {/* Cover */}
+      <div className="h-64 bg-gradient-to-br from-blue-600 via-purple-600 to-pink-600 relative">
         <div className="absolute inset-0 bg-black/20" />
       </div>
 
+      {/* Profile Header */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Profile Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="relative -mt-20 mb-8"
-        >
-          <div className="glass-card p-6">
-            <div className="flex flex-col md:flex-row items-start md:items-end gap-6">
-              {/* Avatar */}
-              <div className="relative">
-                <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-blue-400 to-purple-500 border-4 border-white dark:border-slate-900 shadow-xl" />
-                <div className="absolute -bottom-2 -right-2 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
-                  <Award className="w-4 h-4 text-white" />
-                </div>
-              </div>
-
-              {/* Info */}
-              <div className="flex-1">
-                <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">
-                  Collector #001
-                </h1>
-                <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
-                  <code className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm">
-                    {shortAddress}
-                  </code>
-                  <button 
-                    onClick={copyAddress}
-                    className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                  >
-                    <Copy className="w-4 h-4" />
-                  </button>
-                  <a 
-                    href={`https://tonscan.org/address/${address}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => setIsEditing(!isEditing)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
-                >
-                  <Edit3 className="w-4 h-4" />
-                  Edit Profile
-                </button>
-                <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-medium hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-                  <Settings className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 pt-6 border-t border-slate-200 dark:border-slate-700">
-              {[
-                { label: 'Volume', value: '125.5 TON' },
-                { label: 'NFTs', value: '12' },
-                { label: 'Followers', value: '234' },
-                { label: 'Following', value: '89' },
-              ].map((stat) => (
-                <div key={stat.label} className="text-center">
-                  <p className="text-xl font-bold text-slate-900 dark:text-white">{stat.value}</p>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">{stat.label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Tabs */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="flex flex-wrap gap-2 mb-8"
-        >
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${
-                activeTab === tab.id
-                  ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/25'
-                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
-              }`}
+        <div className="relative -mt-20 mb-8">
+          <div className="flex flex-col md:flex-row items-start md:items-end gap-6">
+            {/* Avatar */}
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="relative"
             >
-              <tab.icon className="w-5 h-5" />
-              {tab.label}
-            </button>
+              <div className="w-32 h-32 md:w-40 md:h-40 rounded-2xl overflow-hidden border-4 border-white dark:border-slate-800 shadow-xl">
+                <Image
+                  src={mockUser.avatarUrl}
+                  alt={mockUser.username}
+                  fill
+                  className="object-cover"
+                />
+              </div>
+              <div className="absolute -bottom-2 -right-2 w-8 h-8 bg-green-500 rounded-full border-4 border-white dark:border-slate-800" />
+            </motion.div>
+
+            {/* Info */}
+            <div className="flex-1 pb-2">
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+              >
+                <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
+                  {mockUser.username}
+                </h1>
+                <div className="flex items-center gap-2 mt-2">
+                  <button
+                    onClick={handleCopyAddress}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg text-sm text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    {mockUser.walletAddress}
+                    <Copy className="w-3 h-3" />
+                  </button>
+                  {copied && (
+                    <span className="text-sm text-green-600">Copied!</span>
+                  )}
+                </div>
+                <p className="text-slate-600 dark:text-slate-400 mt-2 max-w-xl">
+                  {mockUser.bio}
+                </p>
+              </motion.div>
+            </div>
+
+            {/* Actions */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              className="flex gap-3 pb-2"
+            >
+              <Button variant="outline" icon={<Settings className="w-4 h-4" />}>
+                Edit Profile
+              </Button>
+              <Button icon={<ExternalLink className="w-4 h-4" />}>
+                Share
+              </Button>
+            </motion.div>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3 }}
+          className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8"
+        >
+          {[
+            { label: 'NFTs', value: mockUser.stats.totalNfts },
+            { label: 'Sales', value: mockUser.stats.totalSales },
+            { label: 'Volume', value: `${(mockUser.stats.totalVolume / 1e9).toFixed(1)} TON` },
+            { label: 'Followers', value: mockUser.stats.followers.toLocaleString() },
+            { label: 'Following', value: mockUser.stats.following.toLocaleString() },
+          ].map((stat) => (
+            <div
+              key={stat.label}
+              className="bg-white dark:bg-slate-800 rounded-xl p-4 text-center border border-slate-200 dark:border-slate-700"
+            >
+              <p className="text-2xl font-bold text-slate-900 dark:text-white">
+                {stat.value}
+              </p>
+              <p className="text-sm text-slate-500">{stat.label}</p>
+            </div>
           ))}
         </motion.div>
 
-        {/* Content */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
-        >
-          {activeTab === 'created' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {mockCreatedNFTs.map((nft, index) => (
-                <motion.div
-                  key={nft.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
+        {/* Tabs */}
+        <div className="border-b border-slate-200 dark:border-slate-700 mb-8">
+          <div className="flex gap-2">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <motion.button
+                  key={tab.id}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-6 py-3 font-medium transition-colors relative ${
+                    activeTab === tab.id
+                      ? 'text-blue-600 dark:text-blue-400'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
                 >
-                  <NFTCard nft={nft} />
-                </motion.div>
+                  <Icon className="w-4 h-4" />
+                  {tab.label}
+                  {activeTab === tab.id && (
+                    <motion.div
+                      layoutId="activeTab"
+                      className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 dark:bg-blue-400"
+                    />
+                  )}
+                </motion.button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="pb-12"
+        >
+          {activeTab === 'owned' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {/* Mock owned NFTs */}
+              {[1, 2, 3, 4, 5, 6].map((i) => (
+                <NFTCard
+                  key={i}
+                  nft={{
+                    id: `owned-${i}`,
+                    name: `My NFT #${i}`,
+                    imageUrl: `https://picsum.photos/400/300?random=${i}`,
+                    price: 1000000000 * i,
+                    status: 'active',
+                    likes: 10 * i,
+                    owner: {
+                      walletAddress: mockUser.walletAddress,
+                    },
+                  }}
+                />
               ))}
             </div>
           )}
 
+          {activeTab === 'created' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {[1, 2, 3].map((i) => (
+                <NFTCard
+                  key={i}
+                  nft={{
+                    id: `created-${i}`,
+                    name: `Created NFT #${i}`,
+                    imageUrl: `https://picsum.photos/400/300?random=${i + 100}`,
+                    price: 2000000000 * i,
+                    status: 'listed',
+                    likes: 25 * i,
+                    owner: {
+                      walletAddress: mockUser.walletAddress,
+                    },
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'favorites' && (
+            <div className="text-center py-20">
+              <Heart className="w-16 h-16 mx-auto text-slate-300 dark:text-slate-600 mb-4" />
+              <h3 className="text-xl font-semibold text-slate-900 dark:text-white">
+                No favorites yet
+              </h3>
+              <p className="text-slate-500 mt-2">
+                NFTs you like will appear here
+              </p>
+            </div>
+          )}
+
           {activeTab === 'activity' && (
-            <div className="glass-card overflow-hidden">
-              <div className="divide-y divide-slate-200 dark:divide-slate-700">
-                {mockActivity.map((item, index) => (
-                  <div key={index} className="p-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        item.type === 'buy' ? 'bg-green-100 text-green-600' :
-                        item.type === 'sell' ? 'bg-blue-100 text-blue-600' :
-                        'bg-purple-100 text-purple-600'
-                      }`}>
-                        {item.type === 'buy' ? 'B' : item.type === 'sell' ? 'S' : 'A'}
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-900 dark:text-white">
-                          {item.type === 'buy' ? 'Bought' : item.type === 'sell' ? 'Sold' : 'Bid on'} {item.item}
-                        </p>
-                        <p className="text-sm text-slate-500 dark:text-slate-400">{item.date}</p>
-                      </div>
-                    </div>
-                    <p className="font-semibold text-slate-900 dark:text-white">
-                      {item.type === 'buy' ? '-' : '+'}{item.price} TON
+            <div className="space-y-4">
+              {[1, 2, 3, 4, 5].map((i) => (
+                <div
+                  key={i}
+                  className="bg-white dark:bg-slate-800 rounded-xl p-4 flex items-center gap-4 border border-slate-200 dark:border-slate-700"
+                >
+                  <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center">
+                    <History className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-slate-900 dark:text-white">
+                      Listed NFT for sale
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      2 hours ago
                     </p>
                   </div>
-                ))}
-              </div>
+                  <span className="text-green-600 font-medium">+2.5 TON</span>
+                </div>
+              ))}
             </div>
           )}
         </motion.div>

@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2020",
     "module": "commonjs",
-    "lib": ["ES2022"],
+    "lib": ["ES2020"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -17,30 +17,19 @@
     "allowSyntheticDefaultImports": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
-    "noImplicitAny": true,
-    "noImplicitReturns": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "strictNullChecks": true,
-    "strictPropertyInitialization": true,
-    "noFallthroughCasesInSwitch": true,
+    "strictPropertyInitialization": false,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"],
-      "@shared/*": ["src/shared/*"],
-      "@services/*": ["src/services/*"],
-      "@api/*": ["src/api/*"],
-      "@gateway/*": ["src/gateway/*"],
-      "@workers/*": ["src/workers/*"]
+      "@/*": ["src/*"]
     }
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "knexfile.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "**/*.test.ts",
-    "**/*.spec.ts"
+    "**/*.test.ts"
   ]
 }

@@ -1,369 +1,360 @@
-import 'dotenv/config';
-import TelegramBot from 'node-telegram-bot-api';
-import express from 'express';
-import { Redis } from 'ioredis';
-import pino from 'pino';
-import { GiftManager } from './services/GiftManager';
-import { UserManager } from './services/UserManager';
-import { WebhookHandler } from './services/WebhookHandler';
+/**
+ * Telegram Bot for NFT Marketplace
+ * Handles gift management and user linking
+ */
 
-const logger = pino({
-  transport: {
-    target: 'pino-pretty',
-    options: {
-      colorize: true,
-    },
-  },
-});
+import { Telegraf, Context } from 'telegraf';
+import { message } from 'telegraf/filters';
+import dotenv from 'dotenv';
+import { logger } from './utils/logger';
+import { GiftService } from './services/gift.service';
+import { UserService } from './services/user.service';
+import { NotificationService } from './services/notification.service';
 
-const app = express();
-app.use(express.json());
+dotenv.config();
 
-// Initialize Redis
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379'),
-});
-
-// Initialize Bot
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (!token) {
-  logger.error('TELEGRAM_BOT_TOKEN is required');
-  process.exit(1);
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!BOT_TOKEN) {
+  throw new Error('TELEGRAM_BOT_TOKEN is required');
 }
 
-const bot = new TelegramBot(token, { polling: true });
-const giftManager = new GiftManager(redis, bot);
-const userManager = new UserManager(redis);
-const webhookHandler = new WebhookHandler(redis, bot);
+const bot = new Telegraf(BOT_TOKEN);
+const giftService = new GiftService();
+const userService = new UserService();
+const notificationService = new NotificationService(bot);
 
-// Bot Commands
-bot.setMyCommands([
-  { command: 'start', description: 'Start the bot' },
-  { command: 'help', description: 'Show help information' },
-  { command: 'inventory', description: 'View your NFT inventory' },
-  { command: 'deposit', description: 'Deposit a Telegram gift' },
-  { command: 'withdraw', description: 'Withdraw a gift to Telegram' },
-  { command: 'link', description: 'Link your website account' },
-  { command: 'balance', description: 'Check your balance' },
-]);
+// Middleware
+bot.use(async (ctx, next) => {
+  const start = Date.now();
+  logger.debug({
+    updateId: ctx.update.update_id,
+    from: ctx.from?.id,
+    chat: ctx.chat?.id,
+  }, 'Processing update');
 
-// Start Command
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const username = msg.from?.username || 'User';
-  
-  await userManager.registerUser({
-    telegramId: chatId.toString(),
-    username: msg.from?.username,
-    firstName: msg.from?.first_name,
-    lastName: msg.from?.last_name,
+  try {
+    await next();
+  } catch (error) {
+    logger.error({
+      error: (error as Error).message,
+      updateId: ctx.update.update_id,
+    }, 'Error processing update');
+    
+    await ctx.reply('An error occurred. Please try again later.');
+  }
+
+  logger.debug({
+    updateId: ctx.update.update_id,
+    duration: Date.now() - start,
+  }, 'Update processed');
+});
+
+// Start command
+bot.command('start', async (ctx) => {
+  const user = ctx.from;
+  if (!user) return;
+
+  // Register or update user
+  await userService.registerUser({
+    telegramId: user.id.toString(),
+    telegramUsername: user.username,
+    firstName: user.first_name,
+    lastName: user.last_name,
   });
 
   const welcomeMessage = `
-🎉 Welcome to <b>TON NFT Marketplace Bot</b>, ${username}!
+🎉 Welcome to TON NFT Marketplace Bot!
 
-I can help you manage your NFTs and Telegram gifts:
+I'm here to help you manage your NFTs and Telegram gifts. Here's what you can do:
 
-📦 <b>Deposit</b> - Send gifts from Telegram to your inventory
-🎁 <b>Withdraw</b> - Send gifts back to Telegram
-💼 <b>Inventory</b> - View all your NFTs
-🔗 <b>Link</b> - Connect with your website account
+📦 /inventory - View your NFT inventory
+🎁 /gifts - View your Telegram gifts
+💰 /deposit - Deposit a gift to marketplace
+💸 /withdraw - Withdraw a gift to Telegram
+🔗 /link - Link your website account
+📊 /balance - Check your balance
+❓ /help - Show help
 
-Use /help to see all available commands.
+Get started by linking your account or checking your inventory!
   `;
 
-  bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'HTML' });
+  await ctx.reply(welcomeMessage, {
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🌐 Open Marketplace', url: process.env.FRONTEND_URL || 'https://example.com' },
+          { text: '🔗 Link Account', callback_data: 'link_account' },
+        ],
+      ],
+    },
+  });
 });
 
-// Help Command
-bot.onText(/\/help/, (msg) => {
-  const chatId = msg.chat.id;
-  
+// Help command
+bot.command('help', async (ctx) => {
   const helpMessage = `
-📚 <b>Available Commands:</b>
+📚 <b>Available Commands</b>
 
-/start - Start the bot
-/help - Show this help message
-/inventory - View your NFT inventory
-/deposit - Deposit a Telegram gift
-/withdraw - Withdraw a gift to Telegram
-/link - Link your website account
-/balance - Check your balance
+<b>NFT Management</b>
+/inventory - View your NFTs
+/activity - View your activity
 
-💡 <b>Quick Tips:</b>
-• Send a gift to deposit it
-• Use /withdraw to get gifts back
-• Link your account for full features
+<b>Gift Management</b>
+/gifts - List your Telegram gifts
+/deposit - Deposit a gift
+/withdraw - Withdraw a gift
+
+<b>Account</b>
+/link - Link website account
+/balance - Check balance
+/profile - View profile
+/settings - Bot settings
+
+<b>Support</b>
+/help - Show this help
+/support - Contact support
   `;
 
-  bot.sendMessage(chatId, helpMessage, { parse_mode: 'HTML' });
+  await ctx.reply(helpMessage, { parse_mode: 'HTML' });
 });
 
-// Inventory Command
-bot.onText(/\/inventory/, async (msg) => {
-  const chatId = msg.chat.id;
-  
+// Inventory command
+bot.command('inventory', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+
+  await ctx.reply('🔍 Fetching your inventory...');
+
   try {
-    const gifts = await giftManager.getUserGifts(chatId.toString());
+    const inventory = await userService.getInventory(userId);
     
-    if (gifts.length === 0) {
-      bot.sendMessage(chatId, '📭 Your inventory is empty. Send me a gift to deposit it!');
-      return;
-    }
-
-    let message = '📦 <b>Your Inventory:</b>\n\n';
-    gifts.forEach((gift, index) => {
-      message += `${index + 1}. <b>${gift.name}</b>\n`;
-      message += `   Status: ${gift.status}\n`;
-      message += `   Value: ${gift.value} TON\n\n`;
-    });
-
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: '🌐 View on Website', url: `${process.env.FRONTEND_URL}/inventory` }],
-        [{ text: '⬆️ Withdraw Gift', callback_data: 'withdraw_menu' }],
-      ],
-    };
-
-    bot.sendMessage(chatId, message, { 
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    });
-  } catch (error) {
-    logger.error('Error fetching inventory:', error);
-    bot.sendMessage(chatId, '❌ Error fetching inventory. Please try again.');
-  }
-});
-
-// Deposit Command
-bot.onText(/\/deposit/, (msg) => {
-  const chatId = msg.chat.id;
-  
-  const message = `
-📥 <b>Deposit a Gift</b>
-
-To deposit a Telegram gift to your inventory:
-
-1. Open any chat in Telegram
-2. Tap the attachment button (📎)
-3. Select "Gift"
-4. Choose a gift and send it to me
-
-The gift will be automatically added to your inventory!
-  `;
-
-  bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
-});
-
-// Withdraw Command
-bot.onText(/\/withdraw/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const gifts = await giftManager.getUserGifts(chatId.toString());
-    const availableGifts = gifts.filter(g => g.status === 'deposited');
-    
-    if (availableGifts.length === 0) {
-      bot.sendMessage(chatId, '❌ You have no gifts available for withdrawal.');
-      return;
-    }
-
-    const keyboard = {
-      inline_keyboard: availableGifts.map((gift, index) => [
-        { text: `${index + 1}. ${gift.name}`, callback_data: `withdraw:${gift.id}` }
-      ]),
-    };
-
-    bot.sendMessage(chatId, '🎁 Select a gift to withdraw:', {
-      reply_markup: keyboard,
-    });
-  } catch (error) {
-    logger.error('Error in withdraw:', error);
-    bot.sendMessage(chatId, '❌ Error processing request. Please try again.');
-  }
-});
-
-// Link Account Command
-bot.onText(/\/link/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const linkingCode = await userManager.generateLinkingCode(chatId.toString());
-    
-    const message = `
-🔗 <b>Link Your Account</b>
-
-To link your Telegram with the website:
-
-1. Go to your <a href="${process.env.FRONTEND_URL}/profile">Profile</a>
-2. Click "Link Telegram"
-3. Enter this code: <code>${linkingCode}</code>
-
-Or click the button below to link automatically:
-    `;
-
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: '🔗 Link Account', url: `${process.env.FRONTEND_URL}/link-telegram?code=${linkingCode}` }],
-      ],
-    };
-
-    bot.sendMessage(chatId, message, { 
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    });
-  } catch (error) {
-    logger.error('Error generating linking code:', error);
-    bot.sendMessage(chatId, '❌ Error generating linking code. Please try again.');
-  }
-});
-
-// Balance Command
-bot.onText(/\/balance/, async (msg) => {
-  const chatId = msg.chat.id;
-  
-  try {
-    const balance = await userManager.getBalance(chatId.toString());
-    const gifts = await giftManager.getUserGifts(chatId.toString());
-    
-    const message = `
-💰 <b>Your Balance</b>
-
-TON Balance: <b>${balance.ton} TON</b>
-NFTs Owned: <b>${balance.nftCount}</b>
-Gifts Deposited: <b>${gifts.filter(g => g.status === 'deposited').length}</b>
-
-View full details on the website:
-    `;
-
-    const keyboard = {
-      inline_keyboard: [
-        [{ text: '🌐 View Profile', url: `${process.env.FRONTEND_URL}/profile` }],
-      ],
-    };
-
-    bot.sendMessage(chatId, message, { 
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    });
-  } catch (error) {
-    logger.error('Error fetching balance:', error);
-    bot.sendMessage(chatId, '❌ Error fetching balance. Please try again.');
-  }
-});
-
-// Handle Callback Queries
-bot.on('callback_query', async (query) => {
-  const chatId = query.message?.chat.id;
-  const data = query.data;
-
-  if (!chatId || !data) return;
-
-  if (data.startsWith('withdraw:')) {
-    const giftId = data.split(':')[1];
-    
-    try {
-      // Create withdrawal request
-      await giftManager.createWithdrawalRequest({
-        giftId,
-        telegramId: chatId.toString(),
-        status: 'pending',
-      });
-
-      bot.editMessageText(
-        '✅ Withdrawal request created!\n\nYour gift will be sent to you shortly. You can check the status on the website.',
+    if (inventory.length === 0) {
+      await ctx.reply(
+        '📭 Your inventory is empty.\n\nDeposit NFTs from the website or purchase from the marketplace!',
         {
-          chat_id: chatId,
-          message_id: query.message?.message_id,
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🌐 View Status', url: `${process.env.FRONTEND_URL}/inventory` }],
+              [{ text: '🌐 Browse Marketplace', url: process.env.FRONTEND_URL || 'https://example.com' }],
             ],
           },
         }
       );
-    } catch (error) {
-      logger.error('Error creating withdrawal:', error);
-      bot.answerCallbackQuery(query.id, { text: 'Error processing withdrawal' });
+      return;
     }
-  }
 
-  bot.answerCallbackQuery(query.id);
-});
-
-// Handle Incoming Gifts (Web App Data or regular messages)
-bot.on('message', async (msg) => {
-  // Check if message contains a gift (via WebApp or forwarded)
-  if (msg.web_app_data) {
-    try {
-      const data = JSON.parse(msg.web_app_data.data);
-      
-      if (data.type === 'gift_deposit') {
-        await giftManager.depositGift({
-          telegramId: msg.chat.id.toString(),
-          giftData: data.gift,
-          source: 'webapp',
-        });
-
-        bot.sendMessage(
-          msg.chat.id,
-          `✅ <b>Gift Deposited Successfully!</b>\n\nName: ${data.gift.name}\nValue: ${data.gift.value} TON\n\nView it in your inventory on the website.`,
-          { parse_mode: 'HTML' }
-        );
+    // Show first few items
+    let message = '📦 <b>Your Inventory</b>\n\n';
+    inventory.slice(0, 5).forEach((item: any, index: number) => {
+      message += `${index + 1}. <b>${item.name}</b>\n`;
+      message += `   Status: ${item.status}\n`;
+      if (item.price) {
+        message += `   Price: ${(item.price / 1e9).toFixed(2)} TON\n`;
       }
-    } catch (error) {
-      logger.error('Error processing webapp data:', error);
+      message += '\n';
+    });
+
+    if (inventory.length > 5) {
+      message += `...and ${inventory.length - 5} more items\n`;
     }
+
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'View Full Inventory', url: `${process.env.FRONTEND_URL}/inventory` }],
+        ],
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to fetch inventory:', error);
+    await ctx.reply('❌ Failed to fetch inventory. Please try again later.');
   }
 });
 
-// API Routes for Admin Panel
-app.post('/api/gifts/send', async (req, res) => {
+// Gifts command
+bot.command('gifts', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+
+  await ctx.reply('🎁 Fetching your gifts...');
+
   try {
-    const { giftId, recipientTelegramId } = req.body;
+    const gifts = await giftService.getUserGifts(userId);
+
+    if (gifts.length === 0) {
+      await ctx.reply(
+        '🎁 You don\'t have any gifts yet.\n\nGifts you receive will appear here!'
+      );
+      return;
+    }
+
+    let message = '🎁 <b>Your Telegram Gifts</b>\n\n';
+    gifts.forEach((gift: any, index: number) => {
+      message += `${index + 1}. <b>${gift.name}</b>\n`;
+      message += `   Status: ${gift.status}\n`;
+      message += `   Received: ${new Date(gift.deposited_at).toLocaleDateString()}\n\n`;
+    });
+
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: 'Deposit Gift', callback_data: 'deposit_gift' },
+            { text: 'Withdraw Gift', callback_data: 'withdraw_gift' },
+          ],
+        ],
+      },
+    });
+  } catch (error) {
+    logger.error('Failed to fetch gifts:', error);
+    await ctx.reply('❌ Failed to fetch gifts. Please try again later.');
+  }
+});
+
+// Link account command
+bot.command('link', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+
+  // Generate linking code
+  const linkingCode = await userService.generateLinkingCode(userId);
+
+  await ctx.reply(
+    `🔗 <b>Link Your Account</b>\n\n` +
+    `Use this code on the website to link your Telegram account:\n\n` +
+    `<code>${linkingCode}</code>\n\n` +
+    `Or click the button below:`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ 
+            text: '🔗 Link on Website', 
+            url: `${process.env.FRONTEND_URL}/link-telegram?code=${linkingCode}` 
+          }],
+        ],
+      },
+    }
+  );
+});
+
+// Balance command
+bot.command('balance', async (ctx) => {
+  const userId = ctx.from?.id.toString();
+  if (!userId) return;
+
+  try {
+    const balance = await userService.getBalance(userId);
+
+    await ctx.reply(
+      `💰 <b>Your Balance</b>\n\n` +
+      `Available: ${(balance.available / 1e9).toFixed(2)} TON\n` +
+      `Locked: ${(balance.locked / 1e9).toFixed(2)} TON\n` +
+      `Total: ${((balance.available + balance.locked) / 1e9).toFixed(2)} TON\n\n` +
+      `Use /withdraw to withdraw funds.`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (error) {
+    logger.error('Failed to fetch balance:', error);
+    await ctx.reply('❌ Failed to fetch balance. Please try again later.');
+  }
+});
+
+// Handle callback queries
+bot.on('callback_query', async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  
+  if (!data) return;
+
+  switch (data) {
+    case 'link_account':
+      await ctx.answerCbQuery();
+      await ctx.reply('Use /link to get your linking code!');
+      break;
     
-    const result = await giftManager.sendGiftToUser(giftId, recipientTelegramId);
+    case 'deposit_gift':
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        '🎁 To deposit a gift:\n\n' +
+        '1. Forward the gift message to me\n' +
+        '2. Or use the deposit feature on the website\n\n' +
+        'Once deposited, you can list it for sale!'
+      );
+      break;
     
-    res.json({ success: true, result });
-  } catch (error) {
-    logger.error('Error sending gift:', error);
-    res.status(500).json({ success: false, error: 'Failed to send gift' });
+    case 'withdraw_gift':
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        '💸 To withdraw a gift:\n\n' +
+        'Use the /withdraw command and follow the instructions.'
+      );
+      break;
+    
+    default:
+      await ctx.answerCbQuery('Unknown action');
   }
 });
 
-app.get('/api/gifts/pending', async (req, res) => {
-  try {
-    const pending = await giftManager.getPendingWithdrawals();
-    res.json({ success: true, data: pending });
-  } catch (error) {
-    logger.error('Error fetching pending gifts:', error);
-    res.status(500).json({ success: false, error: 'Failed to fetch pending gifts' });
+// Handle incoming gifts (when users forward gift messages)
+bot.on(message('text'), async (ctx) => {
+  // Check if message contains a gift (simplified detection)
+  const text = ctx.message.text;
+  
+  if (text.includes('Gift') || text.includes('🎁')) {
+    await ctx.reply(
+      '🎁 <b>Gift Detected!</b>\n\n' +
+      'Would you like to deposit this gift to the marketplace?',
+      {
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Yes, Deposit', callback_data: 'confirm_deposit' },
+              { text: '❌ No', callback_data: 'cancel_deposit' },
+            ],
+          ],
+        },
+      }
+    );
   }
 });
 
-app.post('/api/sync', async (req, res) => {
-  try {
-    await giftManager.syncWithTelegram();
-    res.json({ success: true, message: 'Sync completed' });
-  } catch (error) {
-    logger.error('Error syncing:', error);
-    res.status(500).json({ success: false, error: 'Sync failed' });
+// Error handler
+bot.catch((err, ctx) => {
+  logger.error({
+    error: err,
+    ctx: ctx.update,
+  }, 'Bot error');
+});
+
+// Start bot
+export async function startBot() {
+  logger.info('Starting Telegram bot...');
+  
+  // Set webhook in production
+  if (process.env.NODE_ENV === 'production' && process.env.TELEGRAM_WEBHOOK_URL) {
+    await bot.launch({
+      webhook: {
+        domain: process.env.TELEGRAM_WEBHOOK_URL,
+        port: 3000,
+      },
+    });
+    logger.info('Bot started with webhook');
+  } else {
+    await bot.launch();
+    logger.info('Bot started with polling');
   }
-});
 
-// Start Server
-const PORT = process.env.PORT || 3004;
+  // Enable graceful stop
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
+}
 
-app.listen(PORT, () => {
-  logger.info(`Telegram Bot API server running on port ${PORT}`);
-});
+// Start if run directly
+if (require.main === module) {
+  startBot().catch(console.error);
+}
 
-logger.info('Telegram Bot started successfully');
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  await redis.quit();
-  process.exit(0);
-});
+export { bot };

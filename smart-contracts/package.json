@@ -1,0 +1,39 @@
+{
+  "name": "nft-marketplace-contracts",
+  "version": "1.0.0",
+  "description": "TON NFT Marketplace Smart Contracts",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "npx blueprint build",
+    "build:all": "npm run build:nft && npm run build:marketplace && npm run build:auction",
+    "build:nft": "npx func-js contracts/stdlib.fc contracts/nft_item.fc --boc build/nft_item.cell",
+    "build:marketplace": "npx func-js contracts/stdlib.fc contracts/op_codes.fc contracts/errors.fc contracts/utils.fc contracts/nft_marketplace_v3.fc --boc build/nft_marketplace.cell",
+    "build:auction": "npx func-js contracts/stdlib.fc contracts/op_codes.fc contracts/errors.fc contracts/utils.fc contracts/auction.fc --boc build/auction.cell",
+    "test": "npx blueprint test",
+    "deploy:marketplace": "ts-node scripts/deploy-marketplace.ts",
+    "deploy:testnet": "npm run build && ts-node scripts/deploy-testnet.ts",
+    "create-category": "ts-node scripts/create-category.ts",
+    "compile": "blueprint build",
+    "verify": "ts-node scripts/verify-deployment.ts"
+  },
+  "dependencies": {
+    "@ton/blueprint": "^0.21.0",
+    "@ton/core": "^0.56.0",
+    "@ton/crypto": "^3.2.0",
+    "@ton/ton": "^13.11.0",
+    "@orbs-network/ton-access": "^2.3.3",
+    "dotenv": "^16.3.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@ton/test-utils": "^0.4.0",
+    "@types/jest": "^29.5.11",
+    "@types/node": "^20.10.0",
+    "jest": "^29.7.0",
+    "ton-crypto": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

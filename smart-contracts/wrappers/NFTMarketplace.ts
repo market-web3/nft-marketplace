@@ -1,59 +1,123 @@
-import { 
-  Address, 
-  beginCell, 
-  Cell, 
-  Contract, 
-  contractAddress, 
-  ContractProvider, 
-  Sender, 
+/**
+ * NFT Marketplace Contract Wrapper
+ * TypeScript wrapper for TON FunC contract interaction
+ */
+
+import {
+  Address,
+  beginCell,
+  Cell,
+  Contract,
+  contractAddress,
+  ContractProvider,
+  Dictionary,
+  Sender,
   SendMode,
-  TupleItemInt,
-  TupleItemSlice
+  toNano,
 } from '@ton/core';
 
-// Operation codes matching the smart contract
-const OP_CODES = {
-  CREATE_CATEGORY: 0x1001,
-  SET_FEE: 0x1002,
-  PAUSE_MARKETPLACE: 0x1007,
-  LIST_NFT: 0x2003,
-  BUY_NFT: 0x2006,
-  CREATE_AUCTION: 0x2101,
-  PLACE_BID: 0x2005,
-  END_AUCTION: 0x2102,
-  MAKE_OFFER: 0x2007,
-  ACCEPT_OFFER: 0x2008,
-  REJECT_OFFER: 0x2009,
-  CANCEL_OFFER: 0x200A,
-  CANCEL_EXPIRED_OFFER: 0x200B,
-} as const;
+// Operation codes matching the contract
+export enum OpCodes {
+  // Admin operations
+  CreateCategory = 0x1,
+  SetMarketplaceFee = 0x2,
+  PauseMarketplace = 0x3,
+  ResumeMarketplace = 0x4,
+  EmergencyWithdraw = 0x5,
+  
+  // Listing operations
+  CreateListing = 0x10,
+  CancelListing = 0x11,
+  BuyNFT = 0x12,
+  
+  // Auction operations
+  CreateAuction = 0x20,
+  PlaceBid = 0x21,
+  EndAuction = 0x22,
+  CancelAuction = 0x23,
+  
+  // Offer operations
+  CreateOffer = 0x30,
+  AcceptOffer = 0x31,
+  RejectOffer = 0x32,
+  CancelOffer = 0x33,
+  
+  // NFT operations
+  DepositNFT = 0x40,
+  WithdrawNFT = 0x41,
+  
+  // Balance operations
+  DepositBalance = 0x50,
+  WithdrawBalance = 0x51,
+  
+  // Query operations
+  GetListing = 0x100,
+  GetOffer = 0x101,
+  GetAuction = 0x102,
+  GetBalance = 0x103,
+  GetStats = 0x104,
+}
 
-export type NFTMarketplaceConfig = {
+// Error codes matching the contract
+export enum ErrorCodes {
+  Unauthorized = 100,
+  Paused = 101,
+  InvalidPrice = 102,
+  InvalidDuration = 103,
+  ListingNotFound = 104,
+  OfferNotFound = 105,
+  AuctionNotFound = 106,
+  InsufficientBalance = 107,
+  NFTNotOwned = 108,
+  CategoryExists = 109,
+  CategoryNotFound = 110,
+  BidTooLow = 111,
+  AuctionEnded = 112,
+  OfferExpired = 113,
+}
+
+export interface Listing {
+  nftAddress: Address;
+  seller: Address;
+  price: bigint;
+  categoryId: bigint;
+  createdAt: number;
+  expiresAt: number;
+  listingType: number; // 0 = fixed, 1 = auction
+  auctionConfig?: Cell;
+}
+
+export interface Offer {
+  offerId: bigint;
+  nftAddress: Address;
+  buyer: Address;
+  seller: Address;
+  amount: bigint;
+  createdAt: number;
+  expiresAt: number;
+  status: number; // 0=pending, 1=accepted, 2=rejected, 3=expired, 4=cancelled
+}
+
+export interface AuctionConfig {
+  startPrice: bigint;
+  reservePrice: bigint;
+  minBidIncrement: bigint;
+  startTime: number;
+  endTime: number;
+  highestBid: bigint;
+  highestBidder: Address;
+  bidCount: number;
+  isActive: boolean;
+}
+
+export interface MarketplaceConfig {
   adminAddress: Address;
   depositWallet: Address;
   withdrawWallet: Address;
   virtualBalanceManager: Address;
   marketplaceFeePercent: number;
   minWithdrawAmount: bigint;
-};
-
-export function nftMarketplaceConfigToCell(config: NFTMarketplaceConfig): Cell {
-  return beginCell()
-    .storeAddress(config.adminAddress)
-    .storeAddress(config.depositWallet)
-    .storeAddress(config.withdrawWallet)
-    .storeAddress(config.virtualBalanceManager)
-    .storeUint(config.marketplaceFeePercent, 16)
-    .storeCoins(config.minWithdrawAmount)
-    .storeCoins(0) // total_volume
-    .storeUint(0, 64) // total_trades
-    .storeUint(0, 64) // total_nfts
-    .storeUint(0, 1) // is_paused
-    .storeDict(null) // nft_categories
-    .storeDict(null) // active_listings
-    .storeDict(null) // active_offers
-    .storeDict(null) // auctions
-    .endCell();
+  isPaused: boolean;
 }
 
 export class NFTMarketplace implements Contract {
@@ -62,22 +126,32 @@ export class NFTMarketplace implements Contract {
     readonly init?: { code: Cell; data: Cell }
   ) {}
 
-  static createFromAddress(address: Address) {
+  static createFromAddress(address: Address): NFTMarketplace {
     return new NFTMarketplace(address);
   }
 
-  static createFromConfig(config: NFTMarketplaceConfig, code: Cell, workchain = 0) {
-    const data = nftMarketplaceConfigToCell(config);
-    const init = { code, data };
-    return new NFTMarketplace(contractAddress(workchain, init), init);
-  }
+  static createFromConfig(config: MarketplaceConfig, code: Cell, workchain = 0): NFTMarketplace {
+    const data = beginCell()
+      .storeAddress(config.adminAddress)
+      .storeAddress(config.depositWallet)
+      .storeAddress(config.withdrawWallet)
+      .storeAddress(config.virtualBalanceManager)
+      .storeUint(config.marketplaceFeePercent, 16)
+      .storeCoins(config.minWithdrawAmount)
+      .storeCoins(0) // total_volume
+      .storeUint(0, 64) // total_trades
+      .storeUint(0, 64) // total_nfts
+      .storeUint(config.isPaused ? 1 : 0, 1)
+      .storeDict(Dictionary.empty()) // nft_categories
+      .storeDict(Dictionary.empty()) // active_listings
+      .storeDict(Dictionary.empty()) // active_offers
+      .storeDict(Dictionary.empty()) // auctions
+      .endCell();
 
-  async sendDeploy(provider: ContractProvider, via: Sender, value: bigint) {
-    await provider.internal(via, {
-      value,
-      sendMode: SendMode.PAY_GAS_SEPARATELY,
-      body: beginCell().endCell(),
-    });
+    const init = { code, data };
+    const address = contractAddress(workchain, init);
+
+    return new NFTMarketplace(address, init);
   }
 
   // Admin Operations
@@ -88,61 +162,112 @@ export class NFTMarketplace implements Contract {
       categoryId: bigint;
       categoryName: string;
       highloadWallet: Address;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.05'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.CREATE_CATEGORY, 32)
+        .storeUint(OpCodes.CreateCategory, 32)
         .storeUint(0, 64) // query_id
+        .storeUint(opts.categoryId, 256)
         .storeRef(beginCell().storeStringTail(opts.categoryName).endCell())
         .storeAddress(opts.highloadWallet)
-        .storeUint(opts.categoryId, 256)
         .endCell(),
     });
   }
 
-  async sendSetFee(
+  async sendSetMarketplaceFee(
     provider: ContractProvider,
     via: Sender,
     opts: {
       feePercent: number;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.05'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.SET_FEE, 32)
+        .storeUint(OpCodes.SetMarketplaceFee, 32)
         .storeUint(0, 64)
         .storeUint(opts.feePercent, 16)
         .endCell(),
     });
   }
 
+  async sendPauseMarketplace(
+    provider: ContractProvider,
+    via: Sender,
+    opts: { value?: bigint } = {}
+  ): Promise<void> {
+    await provider.internal(via, {
+      value: opts.value || toNano('0.05'),
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
+      body: beginCell()
+        .storeUint(OpCodes.PauseMarketplace, 32)
+        .storeUint(0, 64)
+        .endCell(),
+    });
+  }
+
+  async sendResumeMarketplace(
+    provider: ContractProvider,
+    via: Sender,
+    opts: { value?: bigint } = {}
+  ): Promise<void> {
+    await provider.internal(via, {
+      value: opts.value || toNano('0.05'),
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
+      body: beginCell()
+        .storeUint(OpCodes.ResumeMarketplace, 32)
+        .storeUint(0, 64)
+        .endCell(),
+    });
+  }
+
   // Listing Operations
-  async sendListNFT(
+  async sendCreateListing(
     provider: ContractProvider,
     via: Sender,
     opts: {
       nftAddress: Address;
-      categoryId: bigint;
       price: bigint;
-      value: bigint;
+      categoryId: bigint;
+      expiresAt: number;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.1'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.LIST_NFT, 32)
+        .storeUint(OpCodes.CreateListing, 32)
         .storeUint(0, 64)
         .storeAddress(opts.nftAddress)
-        .storeUint(opts.categoryId, 256)
         .storeCoins(opts.price)
+        .storeUint(opts.categoryId, 256)
+        .storeUint(opts.expiresAt, 64)
+        .endCell(),
+    });
+  }
+
+  async sendCancelListing(
+    provider: ContractProvider,
+    via: Sender,
+    opts: {
+      listingId: bigint;
+      value?: bigint;
+    }
+  ): Promise<void> {
+    await provider.internal(via, {
+      value: opts.value || toNano('0.05'),
+      sendMode: SendMode.PAY_GAS_SEPARATELY,
+      body: beginCell()
+        .storeUint(OpCodes.CancelListing, 32)
+        .storeUint(0, 64)
+        .storeUint(opts.listingId, 256)
         .endCell(),
     });
   }
@@ -154,12 +279,12 @@ export class NFTMarketplace implements Contract {
       listingId: bigint;
       value: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
       value: opts.value,
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.BUY_NFT, 32)
+        .storeUint(OpCodes.BuyNFT, 32)
         .storeUint(0, 64)
         .storeUint(opts.listingId, 256)
         .endCell(),
@@ -172,26 +297,28 @@ export class NFTMarketplace implements Contract {
     via: Sender,
     opts: {
       nftAddress: Address;
-      categoryId: bigint;
       startPrice: bigint;
       reservePrice: bigint;
       minBidIncrement: bigint;
       durationDays: number;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const endTime = now + opts.durationDays * 86400;
+
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.1'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.CREATE_AUCTION, 32)
+        .storeUint(OpCodes.CreateAuction, 32)
         .storeUint(0, 64)
         .storeAddress(opts.nftAddress)
-        .storeUint(opts.categoryId, 256)
         .storeCoins(opts.startPrice)
         .storeCoins(opts.reservePrice)
         .storeCoins(opts.minBidIncrement)
-        .storeUint(opts.durationDays, 16)
+        .storeUint(now, 64)
+        .storeUint(endTime, 64)
         .endCell(),
     });
   }
@@ -203,12 +330,12 @@ export class NFTMarketplace implements Contract {
       auctionId: bigint;
       value: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
       value: opts.value,
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.PLACE_BID, 32)
+        .storeUint(OpCodes.PlaceBid, 32)
         .storeUint(0, 64)
         .storeUint(opts.auctionId, 256)
         .endCell(),
@@ -220,14 +347,14 @@ export class NFTMarketplace implements Contract {
     via: Sender,
     opts: {
       auctionId: bigint;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.05'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.END_AUCTION, 32)
+        .storeUint(OpCodes.EndAuction, 32)
         .storeUint(0, 64)
         .storeUint(opts.auctionId, 256)
         .endCell(),
@@ -235,27 +362,28 @@ export class NFTMarketplace implements Contract {
   }
 
   // Offer Operations
-  async sendMakeOffer(
+  async sendCreateOffer(
     provider: ContractProvider,
     via: Sender,
     opts: {
       nftAddress: Address;
       seller: Address;
-      offerAmount: bigint;
       durationHours: number;
       value: bigint;
     }
-  ) {
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + opts.durationHours * 3600;
+
     await provider.internal(via, {
       value: opts.value,
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.MAKE_OFFER, 32)
+        .storeUint(OpCodes.CreateOffer, 32)
         .storeUint(0, 64)
         .storeAddress(opts.nftAddress)
         .storeAddress(opts.seller)
-        .storeCoins(opts.offerAmount)
-        .storeUint(opts.durationHours, 16)
+        .storeUint(expiresAt, 64)
         .endCell(),
     });
   }
@@ -265,14 +393,14 @@ export class NFTMarketplace implements Contract {
     via: Sender,
     opts: {
       offerId: bigint;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.05'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.ACCEPT_OFFER, 32)
+        .storeUint(OpCodes.AcceptOffer, 32)
         .storeUint(0, 64)
         .storeUint(opts.offerId, 256)
         .endCell(),
@@ -284,74 +412,62 @@ export class NFTMarketplace implements Contract {
     via: Sender,
     opts: {
       offerId: bigint;
-      value: bigint;
+      value?: bigint;
     }
-  ) {
+  ): Promise<void> {
     await provider.internal(via, {
-      value: opts.value,
+      value: opts.value || toNano('0.05'),
       sendMode: SendMode.PAY_GAS_SEPARATELY,
       body: beginCell()
-        .storeUint(OP_CODES.REJECT_OFFER, 32)
+        .storeUint(OpCodes.RejectOffer, 32)
         .storeUint(0, 64)
         .storeUint(opts.offerId, 256)
         .endCell(),
     });
   }
 
-  // Get Methods
-  async getMarketplaceInfo(provider: ContractProvider): Promise<{
-    fee: number;
-    minWithdraw: bigint;
-    volume: bigint;
-    trades: number;
-    admin: Address;
-    deposit: Address;
-    withdraw: Address;
-    vbm: Address;
-    totalNfts: number;
-    isPaused: number;
-  }> {
-    const result = await provider.get('get_marketplace_info', []);
+  // Getters
+  async getListing(provider: ContractProvider, listingId: bigint): Promise<Listing | null> {
+    const result = await provider.get('get_listing', [
+      { type: 'int', value: listingId },
+    ]);
+    
+    if (result.stack.length < 6) return null;
+
     return {
-      fee: (result.stack[0] as TupleItemInt).value,
-      minWithdraw: (result.stack[1] as TupleItemInt).value,
-      volume: (result.stack[2] as TupleItemInt).value,
-      trades: Number((result.stack[3] as TupleItemInt).value),
-      admin: (result.stack[4] as TupleItemSlice).cell.asSlice().loadAddress(),
-      deposit: (result.stack[5] as TupleItemSlice).cell.asSlice().loadAddress(),
-      withdraw: (result.stack[6] as TupleItemSlice).cell.asSlice().loadAddress(),
-      vbm: (result.stack[7] as TupleItemSlice).cell.asSlice().loadAddress(),
-      totalNfts: Number((result.stack[8] as TupleItemInt).value),
-      isPaused: Number((result.stack[9] as TupleItemInt).value),
+      nftAddress: result.stack[0].cell.beginParse().loadAddress(),
+      seller: result.stack[1].cell.beginParse().loadAddress(),
+      price: result.stack[2].value,
+      categoryId: result.stack[3].value,
+      createdAt: Number(result.stack[4].value),
+      expiresAt: Number(result.stack[5].value),
+      listingType: result.stack[6] ? Number(result.stack[6].value) : 0,
     };
   }
 
-  async getAuctionInfo(provider: ContractProvider, auctionId: bigint): Promise<{
-    startPrice: bigint;
-    reservePrice: bigint;
-    minBidIncrement: bigint;
-    highestBid: bigint;
-    bidCount: number;
-    timeRemaining: number;
-    highestBidder: Address;
-    isActive: number;
-    startTime: number;
-    endTime: number;
+  async getMarketplaceData(provider: ContractProvider): Promise<{
+    adminAddress: Address;
+    feePercent: number;
+    totalVolume: bigint;
+    totalTrades: bigint;
+    isPaused: boolean;
   }> {
-    const result = await provider.get('get_auction_info', [
-      { type: 'int', value: auctionId } as TupleItemInt,
-    ]);
+    const result = await provider.get('get_marketplace_data', []);
+    
     return {
-      startPrice: (result.stack[0] as TupleItemInt).value,
-      reservePrice: (result.stack[1] as TupleItemInt).value,
-      minBidIncrement: (result.stack[2] as TupleItemInt).value,
-      highestBid: (result.stack[3] as TupleItemInt).value,
-      bidCount: Number((result.stack[4] as TupleItemInt).value),
-      timeRemaining: Number((result.stack[5] as TupleItemInt).value),
-      highestBidder: (result.stack[6] as TupleItemSlice).cell.asSlice().loadAddress(),
-      isActive: Number((result.stack[7] as TupleItemInt).value),
-      startTime: Number((result.stack[8] as TupleItemInt).value),
-      endTime: Number((result.stack[9] as TupleItemInt).value),
+      adminAddress: result.stack[0].cell.beginParse().loadAddress(),
+      feePercent: Number(result.stack[4].value),
+      totalVolume: result.stack[6].value,
+      totalTrades: result.stack[7].value,
+      isPaused: result.stack[9].value === 1n,
     };
+  }
+
+  async getBalance(provider: ContractProvider, address: Address): Promise<bigint> {
+    const result = await provider.get('get_balance', [
+      { type: 'slice', cell: beginCell().storeAddress(address).endCell() },
+    ]);
+    
+    return result.stack[0].value;
   }
 }

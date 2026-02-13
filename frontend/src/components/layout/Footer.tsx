@@ -3,16 +3,19 @@
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import { 
-  Sparkles, Twitter, Github, Send, MessageCircle,
-  ExternalLink
+  Twitter, 
+  Github, 
+  MessageCircle, 
+  Send,
+  Gem
 } from 'lucide-react';
 
 const footerLinks = {
   marketplace: [
-    { label: 'Explore', href: '/market' },
-    { label: 'Collections', href: '/collections' },
+    { label: 'All NFTs', href: '/market' },
+    { label: 'Categories', href: '/categories' },
     { label: 'Auctions', href: '/auctions' },
-    { label: 'Create NFT', href: '/create' },
+    { label: 'Trending', href: '/trending' },
   ],
   account: [
     { label: 'Profile', href: '/profile' },
@@ -20,54 +23,55 @@ const footerLinks = {
     { label: 'Watchlist', href: '/watchlist' },
     { label: 'Settings', href: '/settings' },
   ],
+  resources: [
+    { label: 'Documentation', href: '/docs' },
+    { label: 'API', href: '/api' },
+    { label: 'Community', href: '/community' },
+    { label: 'Help Center', href: '/help' },
+  ],
   company: [
     { label: 'About', href: '/about' },
-    { label: 'Careers', href: '/careers' },
     { label: 'Blog', href: '/blog' },
-    { label: 'Brand', href: '/brand' },
-  ],
-  support: [
-    { label: 'Help Center', href: '/help' },
-    { label: 'Terms of Service', href: '/terms' },
-    { label: 'Privacy Policy', href: '/privacy' },
-    { label: 'Contact Us', href: '/contact' },
+    { label: 'Careers', href: '/careers' },
+    { label: 'Contact', href: '/contact' },
   ],
 };
 
 const socialLinks = [
   { icon: Twitter, href: 'https://twitter.com', label: 'Twitter' },
+  { icon: MessageCircle, href: 'https://discord.com', label: 'Discord' },
   { icon: Send, href: 'https://t.me', label: 'Telegram' },
   { icon: Github, href: 'https://github.com', label: 'GitHub' },
-  { icon: MessageCircle, href: 'https://discord.com', label: 'Discord' },
 ];
 
 export function Footer() {
   return (
-    <footer className="bg-slate-900 text-white pt-16 pb-8">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8 mb-12">
+    <footer className="bg-slate-900 text-slate-300">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-8">
           {/* Brand */}
-          <div className="col-span-2 md:col-span-3 lg:col-span-2">
-            <Link href="/" className="flex items-center gap-2 mb-4">
-              <div className="w-10 h-10 rounded-xl ton-gradient flex items-center justify-center">
-                <Sparkles className="w-6 h-6 text-white" />
+          <div className="lg:col-span-2">
+            <Link href="/" className="flex items-center space-x-2 mb-4">
+              <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
+                <Gem className="w-6 h-6 text-white" />
               </div>
-              <span className="text-xl font-bold">TON NFT</span>
+              <span className="text-xl font-bold text-white">TON NFT</span>
             </Link>
-            <p className="text-slate-400 mb-6 max-w-sm">
-              The premier NFT marketplace on The Open Network. 
-              Buy, sell, and discover extraordinary digital collectibles.
+            <p className="text-sm text-slate-400 mb-6 max-w-xs">
+              Discover, collect, and trade extraordinary NFTs on the TON blockchain. 
+              The premier marketplace for digital collectibles.
             </p>
-            <div className="flex gap-3">
+            <div className="flex space-x-4">
               {socialLinks.map((social) => (
                 <motion.a
                   key={social.label}
                   href={social.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  whileHover={{ scale: 1.1, y: -2 }}
+                  whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center hover:bg-slate-700 transition-colors"
+                  className="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center hover:bg-slate-700 transition-colors"
+                  aria-label={social.label}
                 >
                   <social.icon className="w-5 h-5" />
                 </motion.a>
@@ -78,15 +82,15 @@ export function Footer() {
           {/* Links */}
           {Object.entries(footerLinks).map(([category, links]) => (
             <div key={category}>
-              <h3 className="font-semibold mb-4 capitalize text-slate-200">
+              <h3 className="text-sm font-semibold text-white uppercase tracking-wider mb-4">
                 {category}
               </h3>
               <ul className="space-y-3">
                 {links.map((link) => (
-                  <li key={link.label}>
+                  <li key={link.href}>
                     <Link
                       href={link.href}
-                      className="text-slate-400 hover:text-white transition-colors text-sm"
+                      className="text-sm hover:text-white transition-colors"
                     >
                       {link.label}
                     </Link>
@@ -97,44 +101,17 @@ export function Footer() {
           ))}
         </div>
 
-        {/* TON Badge */}
-        <div className="border-t border-slate-800 pt-8 mb-8">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-xl bg-[#0088cc]/20 flex items-center justify-center">
-                <span className="text-[#0088cc] font-bold text-lg">TON</span>
-              </div>
-              <div>
-                <p className="font-medium">Powered by TON</p>
-                <p className="text-sm text-slate-400">The Open Network</p>
-              </div>
-            </div>
-            <a
-              href="https://ton.org"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors"
-            >
-              Learn more about TON
-              <ExternalLink className="w-4 h-4" />
-            </a>
-          </div>
-        </div>
-
         {/* Bottom */}
-        <div className="border-t border-slate-800 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <p className="text-slate-400 text-sm">
+        <div className="border-t border-slate-800 mt-12 pt-8 flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
+          <p className="text-sm text-slate-400">
             © {new Date().getFullYear()} TON NFT Marketplace. All rights reserved.
           </p>
-          <div className="flex items-center gap-6 text-sm text-slate-400">
-            <Link href="/terms" className="hover:text-white transition-colors">
-              Terms
+          <div className="flex space-x-6">
+            <Link href="/privacy" className="text-sm hover:text-white transition-colors">
+              Privacy Policy
             </Link>
-            <Link href="/privacy" className="hover:text-white transition-colors">
-              Privacy
-            </Link>
-            <Link href="/cookies" className="hover:text-white transition-colors">
-              Cookies
+            <Link href="/terms" className="text-sm hover:text-white transition-colors">
+              Terms of Service
             </Link>
           </div>
         </div>
