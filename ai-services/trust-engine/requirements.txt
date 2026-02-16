@@ -1,0 +1,24 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# PyTorch and Geometric
+torch==2.1.2
+torch-geometric==2.4.0
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+
+# Graph processing
+networkx==3.2.1
+scipy==1.11.4
+
+# Database
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+
+# Redis
+redis==5.0.1
+
+# Utilities
+numpy==1.26.3
+python-dotenv==1.0.0
