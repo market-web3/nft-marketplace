@@ -46,6 +46,54 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
 
+  # Apache Kafka for event streaming
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: nft-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: nft-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # ScyllaDB for high-performance write operations
+  scylladb:
+    image: scylladb/scylla:5.2.0
+    container_name: nft-scylladb
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylladb_data:/var/lib/scylla
+    command: --developer-mode 1
+
+  # IPFS Node for decentralized storage
+  ipfs:
+    image: ipfs/kubo:latest
+    container_name: nft-ipfs
+    ports:
+      - "4001:4001"
+      - "5001:5001"
+      - "8080:8080"
+    volumes:
+      - ipfs_data:/data/ipfs
+
   # Backend API
   backend:
     build:
@@ -125,7 +173,90 @@ services:
       - /app/node_modules
     command: npm run dev
 
+  # Rust Indexer
+  indexer:
+    build:
+      context: ../indexer
+      dockerfile: Dockerfile
+    container_name: nft-indexer
+    environment:
+      INDEXER__TON_API_URL: https://toncenter.com/api/v2
+      INDEXER__START_BLOCK_SEQNO: 0
+      INDEXER__POLL_INTERVAL_MS: 1000
+      INDEXER__KAFKA__BOOTSTRAP_SERVERS: kafka:29092
+      INDEXER__SCYLLA__NODES: scylladb:9042
+    depends_on:
+      - kafka
+      - scylladb
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../indexer:/app
+      - indexer_logs:/app/logs
+
+  # AI Embeddings Service
+  embeddings-service:
+    build:
+      context: ../ai-services/embeddings
+      dockerfile: Dockerfile
+    container_name: nft-embeddings
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/nft_marketplace
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../ai-services/embeddings:/app
+
+  # AI Trust Engine
+  trust-engine:
+    build:
+      context: ../ai-services/trust-engine
+      dockerfile: Dockerfile
+    container_name: nft-trust-engine
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/nft_marketplace
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8002:8002"
+    volumes:
+      - ../ai-services/trust-engine:/app
+      - trust_models:/app/models
+
+  # Gasless Relayer
+  relayer:
+    build:
+      context: ../relayer
+      dockerfile: Dockerfile
+    container_name: nft-relayer
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/nft_marketplace
+      REDIS_URL: redis://redis:6379
+      TON_API_URL: https://toncenter.com/api/v2
+      PORT: 3005
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "3005:3005"
+    volumes:
+      - ../relayer:/app
+      - relayer_logs:/app/logs
+
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  kafka_data:
+  zookeeper_data:
+  scylladb_data:
+  ipfs_data:
+  indexer_logs:
+  trust_models:
+  relayer_logs:

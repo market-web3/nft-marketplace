@@ -1,0 +1,63 @@
+# TON NFT Indexer Configuration
+
+[ton]
+# TON API URL
+api_url = "https://toncenter.com/api/v2"
+
+# Starting block sequence number
+start_block_seqno = 0
+
+# Poll interval in milliseconds
+poll_interval_ms = 1000
+
+# Maximum consecutive errors before shutdown
+max_consecutive_errors = 10
+
+[parser]
+# NFT standard contract addresses
+nft_standard_addresses = [
+    "EQD...1",  # TON NFT standard
+]
+
+# Marketplace contract address
+marketplace_address = "EQ...2"
+
+# Maximum transactions to process per block
+max_transactions_per_block = 1000
+
+# Skip invalid transactions
+skip_invalid_transactions = false
+
+[kafka]
+# Kafka bootstrap servers
+bootstrap_servers = "localhost:9092"
+
+# Security protocol (PLAINTEXT, SSL, SASL_SSL)
+security_protocol = "PLAINTEXT"
+
+# SASL mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)
+sasl_mechanism = ""
+
+# SASL username
+sasl_username = ""
+
+# SASL password
+sasl_password = ""
+
+[scylla]
+# ScyllaDB nodes
+nodes = ["127.0.0.1:9042"]
+
+# ScyllaDB username (optional)
+username = ""
+
+# ScyllaDB password (optional)
+password = ""
+
+[metrics]
+# Metrics server port
+metrics_port = 9090
+
+[logging]
+# Log level (trace, debug, info, warn, error)
+log_level = "info"
